@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Inventory System — Executive Summary</title>
+<style>
+/* ============================================================ tokens ==== */
+:root{
+  --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+  --navy:#0f172a; --line:#e1e0d9; --plane:#f7f8fa; --surface:#ffffff;
+  --blue:#2a78d6; --blue-tint:#eaf2fc;
+  --orange:#eb6834;
+  --aqua:#1baf7a; --aqua-tint:#e6f7f0;
+  --green:#008300;
+  --red:#e34948;
+  --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
+  --good-tint:#e8f6e8; --warn-tint:#fef6e3; --crit-tint:#fbeaea;
+}
+
+@page{ size:A4; margin:0; }
+
+*{ box-sizing:border-box; }
+
+html,body{ margin:0; padding:0; }
+
+body{
+  font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+  color:var(--ink); background:var(--surface);
+  -webkit-print-color-adjust:exact; print-color-adjust:exact;
+}
+
+.page{
+  position:relative;
+  width:210mm; height:297mm;
+  padding:16mm 15mm 18mm;
+  page-break-after:always; break-after:page;
+  overflow:hidden;
+  display:flex; flex-direction:column;
+}
+.page:last-child{ page-break-after:auto; break-after:auto; }
+
+/* Distributes leftover vertical space so pages read as composed, not top-loaded.
+   .grow centres an illustration in the space left over; .fill anchors a closing
+   callout to the bottom of the page. */
+.grow{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column; justify-content:center; }
+/* .fill is declared at the end of this stylesheet — it needs to outrank the
+   margin-top set by the components it is applied to (.banner, .minis). */
+
+/* ============================================================= chrome === */
+.kicker{
+  font-size:8.6pt; font-weight:600; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--blue); margin-bottom:5mm;
+}
+h1{
+  font-size:23pt; font-weight:650; line-height:1.15; color:var(--navy);
+  margin:0 0 3mm;
+}
+.lead{
+  font-size:11.4pt; line-height:1.5; color:var(--ink2);
+  margin:0 0 7mm; max-width:165mm;
+}
+.foot{
+  position:absolute; left:15mm; right:15mm; bottom:8mm;
+  display:flex; justify-content:space-between;
+  font-size:7.8pt; color:var(--muted);
+  border-top:1px solid var(--line); padding-top:2.5mm;
+}
+
+/* ============================================================== cover === */
+.cover{ background:var(--navy); color:#fff; padding:0; }
+.cover-inner{ padding:32mm 20mm 0; }
+.cover .badge{
+  display:inline-block; border:1.5px solid rgba(255,255,255,.45); border-radius:99px;
+  padding:2mm 5mm; font-size:9pt; font-weight:600; letter-spacing:.04em;
+  margin-bottom:11mm;
+}
+.cover h1{ color:#fff; font-size:37pt; line-height:1.08; margin:0 0 6mm; max-width:150mm; }
+.cover .sub{ font-size:14pt; line-height:1.45; color:#c9d3e2; max-width:148mm; margin:0 0 14mm; }
+.cover .rule{ width:38mm; height:4px; background:var(--blue); margin-bottom:9mm; }
+.cover .meta{ font-size:10pt; color:#93a3ba; line-height:1.85; }
+.cover .meta b{ color:#fff; font-weight:600; }
+.cover-foot{
+  position:absolute; left:0; right:0; bottom:0;
+  background:rgba(255,255,255,.06); padding:7mm 20mm;
+  font-size:9.4pt; color:#c9d3e2; border-top:1px solid rgba(255,255,255,.14);
+}
+.cover-foot b{ color:#fff; }
+
+/* =============================================================== bits === */
+.split{ display:grid; grid-template-columns:1fr 1fr; gap:7mm; }
+.card{
+  border:1px solid var(--line); border-radius:3mm; padding:6mm;
+  background:var(--surface);
+}
+.card h3{ font-size:12pt; margin:0 0 3mm; color:var(--navy); font-weight:650; }
+.card.bad{ background:var(--crit-tint); border-color:#f0c9c9; }
+.card.good{ background:var(--good-tint); border-color:#c6e6c6; }
+
+.pointlist{ list-style:none; margin:0; padding:0; }
+.pointlist li{
+  display:flex; gap:3mm; align-items:flex-start;
+  font-size:10.2pt; line-height:1.45; margin-bottom:3.5mm; color:var(--ink2);
+}
+.pointlist li:last-child{ margin-bottom:0; }
+.mark{ flex:0 0 auto; margin-top:.4mm; }
+
+.banner{
+  margin-top:7mm; border-left:4px solid var(--blue); background:var(--blue-tint);
+  padding:5mm 6mm; border-radius:0 2mm 2mm 0;
+  font-size:10.4pt; line-height:1.5; color:var(--navy);
+}
+.banner b{ font-weight:650; }
+.banner.warn{ border-left-color:var(--warning); background:var(--warn-tint); }
+.banner.ok{ border-left-color:var(--good); background:var(--good-tint); }
+
+.note{ font-size:9.2pt; color:var(--muted); line-height:1.5; margin-top:5mm; }
+
+.minis{ display:grid; grid-template-columns:repeat(3,1fr); gap:4mm; margin-top:6mm; }
+.minis.two{ grid-template-columns:1fr 1fr; }
+.mini{
+  border:1px solid var(--line); border-left:3px solid var(--aqua); border-radius:0 3mm 3mm 0;
+  padding:4mm 4.5mm; font-size:9.4pt; line-height:1.4; color:var(--ink2);
+}
+.mini b{ display:block; color:var(--navy); font-size:10.2pt; margin-bottom:1.4mm; }
+
+/* ---------------------------------------------------------- rule cards -- */
+.rules{ display:grid; grid-template-columns:1fr 1fr; gap:5mm; }
+.rule-card{
+  border:1px solid var(--line); border-radius:3mm; padding:5mm 5mm 5.5mm;
+  display:flex; gap:4mm; align-items:flex-start;
+}
+.rule-card.span{ grid-column:1 / -1; }
+.rule-num{
+  flex:0 0 9mm; height:9mm; border-radius:50%;
+  background:var(--navy); color:#fff;
+  display:flex; align-items:center; justify-content:center;
+  font-size:11pt; font-weight:650;
+}
+.rule-card h4{ font-size:11pt; margin:0 0 1.5mm; color:var(--navy); font-weight:650; }
+.rule-card p{ font-size:9.6pt; line-height:1.42; color:var(--ink2); margin:0; }
+
+/* ------------------------------------------------------------- ledger --- */
+.ledger{ border:1px solid var(--line); border-radius:3mm; overflow:hidden; }
+.ledger table{ width:100%; border-collapse:collapse; font-size:10.4pt; }
+.ledger th{
+  background:var(--navy); color:#fff; text-align:left; font-weight:600;
+  padding:3mm 5mm; font-size:9.4pt; letter-spacing:.03em;
+}
+.ledger td{ padding:3.2mm 5mm; border-top:1px solid var(--line); color:var(--ink2); }
+.ledger td.num{ text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+.ledger .plus{ color:var(--green); }
+.ledger .minus{ color:var(--critical); }
+.ledger tr.total td{ background:var(--plane); color:var(--navy); font-weight:650; font-size:11.4pt; }
+
+.verdict{ display:grid; grid-template-columns:1fr 1fr; gap:5mm; margin-top:6mm; }
+.verdict div{ border-radius:3mm; padding:4.5mm 5mm; font-size:10pt; line-height:1.45; }
+.verdict .no{ background:var(--crit-tint); border:1px solid #f0c9c9; color:#7a2020; }
+.verdict .yes{ background:var(--good-tint); border:1px solid #c6e6c6; color:#14521a; }
+.verdict b{ display:block; font-size:10.6pt; margin-bottom:1.5mm; }
+
+/* --------------------------------------------------------------- flow --- */
+.flow{ position:relative; margin:0; padding:0 0 0 13mm; list-style:none; }
+.flow::before{
+  content:""; position:absolute; left:4.5mm; top:4mm; bottom:6mm;
+  width:2px; background:var(--line);
+}
+.flow li{ position:relative; margin-bottom:3.6mm; }
+.flow li:last-child{ margin-bottom:0; }
+.flow .dot{
+  position:absolute; left:-13mm; top:0;
+  width:9mm; height:9mm; border-radius:50%;
+  background:var(--surface); border:2px solid var(--blue); color:var(--blue);
+  display:flex; align-items:center; justify-content:center;
+  font-size:9.6pt; font-weight:650;
+}
+.flow li.key .dot{ background:var(--blue); border-color:var(--blue); color:#fff; }
+.flow h4{ font-size:10.6pt; margin:.6mm 0 1mm; color:var(--navy); font-weight:650; }
+.flow p{ font-size:9.4pt; line-height:1.42; color:var(--ink2); margin:0; }
+.flow li.key h4{ color:var(--blue); }
+.tag{
+  display:inline-block; margin-left:2mm; padding:.6mm 2.2mm; border-radius:99px;
+  background:var(--blue); color:#fff; font-size:7.6pt; font-weight:650;
+  letter-spacing:.05em; text-transform:uppercase; vertical-align:2px;
+}
+.tag.new{ background:var(--aqua); }
+
+/* -------------------------------------------------------------- audit --- */
+.statstrip{
+  display:flex; border:1px solid var(--line); border-radius:3mm;
+  overflow:hidden; margin-bottom:6mm;
+}
+.statstrip div{ flex:1; padding:4.5mm 3mm; text-align:center; border-right:1px solid var(--line); }
+.statstrip div:last-child{ border-right:0; }
+.statstrip b{ display:block; font-size:21pt; font-weight:650; color:var(--navy); line-height:1; margin-bottom:1.6mm; }
+.statstrip span{ font-size:8.8pt; color:var(--muted); line-height:1.3; display:block; }
+.statstrip div.hit b{ color:var(--critical); }
+.statstrip div.done b{ color:var(--good); }
+
+.attacks{ display:grid; grid-template-columns:1fr 1fr; gap:4.5mm; }
+.attack{ border:1px solid var(--line); border-radius:3mm; overflow:hidden; }
+.attack .ahead{
+  background:var(--crit-tint); border-bottom:1px solid #f0c9c9;
+  padding:3.2mm 4mm; font-size:10.2pt; font-weight:650; color:#7a2020;
+}
+.attack .abody{ padding:4mm; }
+.attack .atk{ font-size:9.2pt; line-height:1.4; color:var(--ink2); margin:0 0 3mm; }
+.attack .fix{
+  font-size:9.2pt; line-height:1.4; color:#14521a; margin:0;
+  background:var(--good-tint); border-radius:2mm; padding:3mm 3.4mm;
+}
+.attack .fix b{ font-weight:650; }
+
+/* --------------------------------------------------------------- roles -- */
+.roles{ display:grid; grid-template-columns:repeat(3,1fr); gap:4mm; margin-bottom:6mm; }
+.role{
+  border:1px solid var(--line); border-radius:3mm; padding:4mm;
+  border-top:3px solid var(--blue);
+}
+.role b{ display:block; font-size:10.4pt; color:var(--navy); margin-bottom:1.2mm; }
+.role span{ font-size:9.2pt; color:var(--ink2); line-height:1.4; display:block; }
+
+.pairs{ display:grid; grid-template-columns:1fr 1fr; gap:4mm; }
+.pair{
+  display:flex; align-items:center; justify-content:center; gap:3.5mm;
+  border:1px solid #f0c9c9; background:var(--crit-tint); border-radius:3mm;
+  padding:4mm 3mm; font-size:10pt; font-weight:600; color:var(--navy);
+}
+.pair .never{
+  flex:0 0 auto; width:7mm; height:7mm; border-radius:50%;
+  background:var(--critical); color:#fff;
+  display:flex; align-items:center; justify-content:center; font-size:10pt; font-weight:700;
+}
+
+/* --------------------------------------------------------------- tiles -- */
+.tiles{ display:grid; grid-template-columns:repeat(3,1fr); gap:4mm; margin-bottom:6mm; }
+.tile{ border:1px solid var(--line); border-radius:3mm; padding:4.5mm; background:var(--surface); }
+.tile .label{ font-size:8.8pt; color:var(--muted); margin-bottom:2mm; line-height:1.3; }
+.tile .value{ font-size:19pt; font-weight:650; color:var(--navy); line-height:1; margin-bottom:2.5mm; }
+.chip{
+  display:inline-flex; align-items:center; gap:1.6mm;
+  font-size:8.4pt; font-weight:600; padding:.8mm 2.4mm; border-radius:99px;
+}
+.chip.ok{ background:var(--good-tint); color:#14521a; }
+.chip.warn{ background:var(--warn-tint); color:#6b4a05; }
+.chip.crit{ background:var(--crit-tint); color:#7a2020; }
+
+.alerts{ border:1px solid var(--line); border-radius:3mm; overflow:hidden; }
+.alerts .head{
+  background:var(--navy); color:#fff; padding:3.4mm 5mm;
+  font-size:9.8pt; font-weight:600;
+}
+.alerts .row{
+  display:flex; gap:4mm; align-items:center;
+  padding:3.2mm 5mm; border-top:1px solid var(--line); font-size:9.6pt; color:var(--ink2);
+}
+.alerts .row b{ color:var(--navy); font-weight:650; }
+.alerts .row .chip{ flex:0 0 auto; white-space:nowrap; min-width:20mm; justify-content:center; }
+
+/* ------------------------------------------------------------ buy list -- */
+.buy{ display:grid; grid-template-columns:1fr 1fr; gap:6mm; align-content:center; }
+.buy ul{ list-style:none; margin:0; padding:0; }
+.buy li{
+  display:flex; gap:3mm; font-size:9.8pt; line-height:1.4;
+  padding:2.4mm 0; border-bottom:1px dashed var(--line); color:var(--ink2);
+}
+.buy li:last-child{ border-bottom:0; }
+.buy li em{ font-style:normal; color:var(--aqua); font-weight:650; font-size:8.4pt; }
+
+/* ------------------------------------------------------------ decisions - */
+.decisions{ display:grid; grid-template-columns:1fr 1fr; gap:4.5mm; margin-bottom:6mm; }
+.decision{
+  border:1px solid var(--line); border-left:4px solid var(--orange);
+  border-radius:0 3mm 3mm 0; padding:4mm 4.5mm;
+}
+.decision.first{ border-left-color:var(--critical); background:var(--crit-tint); border-color:#f0c9c9; border-left-color:var(--critical); }
+.decision b{ display:block; font-size:10.2pt; color:var(--navy); margin-bottom:1.4mm; }
+.decision span{ font-size:9.2pt; color:var(--ink2); line-height:1.42; }
+
+.steps{ display:flex; gap:0; align-items:stretch; margin-top:2mm; }
+.step{
+  flex:1; background:var(--plane); border:1px solid var(--line);
+  padding:4mm 3mm; text-align:center; font-size:9pt; color:var(--ink2); line-height:1.35;
+}
+.step:not(:last-child){ border-right:0; }
+.step b{ display:block; color:var(--navy); font-size:9.6pt; margin-bottom:1mm; }
+
+svg{ display:block; max-width:100%; }
+
+/* Anchors a page's closing callout to the bottom of the page. Two-class
+   selector so it beats the margin-top of whatever component it lands on. */
+.page > .fill{ margin-top:auto; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ 1 COVER == -->
+<section class="page cover">
+  <div class="cover-inner">
+    <div class="badge">12-minute read · full detail available separately</div>
+    <div class="rule"></div>
+    <h1>Stopping stock from going missing</h1>
+    <p class="sub">A plain-English summary of how the new inventory system will work — and why nothing will be able to disappear without a trace.</p>
+    <div class="meta">
+      <b>Inventory System</b> — Executive Summary<br />
+      Prepared for the business owner<br />
+      August 2026 · <b>Version 2.0</b> — rebuilt after a forensic audit of our own design
+    </div>
+  </div>
+  <div class="cover-foot">
+    <b>The short version:</b> your warehouse keeps working exactly as it does today — no scanners, no machines, no new equipment. What changes is that every movement leaves a permanent record with a name on it, and no one person can create a loss and hide it.
+  </div>
+</section>
+
+<!-- ========================================================= 2 PROBLEM === -->
+<section class="page">
+  <div class="kicker">01 · Why we are doing this</div>
+  <h1>Today you find out too late. After, you find out the same day.</h1>
+  <p class="lead">The problem is not that people are careless. The problem is that paper cannot be cross-checked fast enough to catch anything while it still matters.</p>
+
+  <div class="split">
+    <div class="card bad">
+      <h3>Today — on paper</h3>
+      <ul class="pointlist">
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+        You discover stock is missing months later, during a count.</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+        Nobody can say when it happened, who handled it, or which sale caused it.</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+        The only way to know what you have is to stop everything and count.</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+        A supplier who short-delivers looks exactly like theft in your warehouse.</li>
+      </ul>
+    </div>
+    <div class="card good">
+      <h3>After — with the system</h3>
+      <ul class="pointlist">
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        A shortage shows up the same day it happens.</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        Every item traces back to a date, a document, and a person.</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        You can see your stock and its value any time, without counting.</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        Supplier shortages are separated from warehouse losses automatically.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="banner fill">
+    <b>This does not mean mistakes and theft become impossible.</b> It means nothing can happen <i>silently</i>. Any gap points straight to an exact day, an exact item, and an exact person — while you can still do something about it.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>2 / 14</span></div>
+</section>
+
+<!-- ========================================================== 3 BIG IDEA = -->
+<section class="page">
+  <div class="kicker">02 · The one idea everything rests on</div>
+  <h1>Nobody types in a stock number. Ever.</h1>
+  <p class="lead">Your stock level is never a number someone can set. It is only ever the running total of movements that each have a signed document behind them.</p>
+
+  <div class="ledger">
+    <table>
+      <tr><th>What happened</th><th>Document</th><th style="text-align:right">Change</th><th style="text-align:right">Stock now</th></tr>
+      <tr><td>Received from supplier</td><td>RR-ILO-0231</td><td class="num plus">+2,500</td><td class="num">2,500</td></tr>
+      <tr><td>Sold at the store</td><td>SI-ILO-0442</td><td class="num minus">−60</td><td class="num">2,440</td></tr>
+      <tr><td>Delivered to a wholesale customer</td><td>DR-ILO-1188</td><td class="num minus">−500</td><td class="num">1,940</td></tr>
+      <tr><td>Customer returned, still sellable</td><td>RRR-ILO-0067</td><td class="num plus">+40</td><td class="num">1,980</td></tr>
+      <tr><td>Damaged, written off with approval</td><td>IAV-ILO-0012</td><td class="num minus">−20</td><td class="num">1,960</td></tr>
+      <tr class="total"><td colspan="3">Stock on hand today</td><td class="num">1,960</td></tr>
+    </table>
+  </div>
+
+  <div class="verdict">
+    <div class="no">
+      <b>✕ This does not exist</b>
+      A screen where someone types "stock = 1,960". There is no such button for anyone — not staff, not the manager, not you.
+    </div>
+    <div class="yes">
+      <b>✓ This is the only way</b>
+      Add a movement, with a document and a name attached. The total recalculates itself.
+    </div>
+  </div>
+
+  <div class="banner ok fill">
+    <b>And the past cannot be rewritten either.</b> Every night, the system works out a single "fingerprint" number from the entire history of movements, and sends it to you and your auditor — outside the branch. Change even one old entry, and tonight's fingerprint no longer matches the one you already hold. Even someone with full access to the computer itself cannot quietly edit history.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>3 / 14</span></div>
+</section>
+
+<!-- =========================================================== 4 RULES === -->
+<section class="page">
+  <div class="kicker">03 · The rules that make it work</div>
+  <h1>Five rules. That is the whole system.</h1>
+  <p class="lead">Everything else in the detailed design is just these five rules applied to a specific situation.</p>
+
+  <div class="rules">
+    <div class="rule-card">
+      <div class="rule-num">1</div>
+      <div>
+        <h4>Nothing moves without paper</h4>
+        <p>Every item in or out is written on a numbered form at the moment it moves. The form is photographed as it is typed into the system, so what was written and what was typed can always be compared.</p>
+      </div>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">2</div>
+      <div>
+        <h4>Two people count — and cannot compare</h4>
+        <p>They count from opposite ends and hand separate slips straight to the supervisor, never to each other. If a pair's counts match <i>perfectly</i> every single time, that is flagged — genuine counts occasionally differ by one.</p>
+      </div>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">3</div>
+      <div>
+        <h4>Nothing is ever erased</h4>
+        <p>A mistake is corrected by adding a new line, never by rubbing out the old one. The original stays visible forever, and the nightly fingerprint means nobody can rewrite it later.</p>
+      </div>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">4</div>
+      <div>
+        <h4>Corrections need two signatures</h4>
+        <p>Whoever asks to correct a stock number can never be the one who approves it. Small corrections cannot be split up to stay under your limits — the system adds up everything one person requests in a week.</p>
+      </div>
+    </div>
+    <div class="rule-card span">
+      <div class="rule-num">5</div>
+      <div>
+        <h4>Stock can never go below zero</h4>
+        <p>If someone tries to release more than the records show, the system simply stops — and only you can unblock it, before it happens, not afterwards. Negative stock is exactly how real shortages hide for months, so it is never allowed to occur in the first place.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="banner warn fill">
+    <b>The one thing that would break all of this:</b> adding a "quick edit stock" button because it is faster. Every request for one has a real need behind it that an existing form already covers — the button itself must never exist.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>4 / 14</span></div>
+</section>
+
+<!-- =========================================================== 5 AUDIT === -->
+<section class="page">
+  <div class="kicker">04 · We attacked our own design</div>
+  <h1>We tried to rob you, before someone else did</h1>
+  <p class="lead">Before showing you this, we audited our own design as if we were a dishonest employee with months to plan and nothing to lose. We found <b>35 ways to beat it</b>. All 35 are now closed. These four were the worst.</p>
+
+  <div class="statstrip">
+    <div class="hit"><b>35</b><span>ways found to beat<br />the original design</span></div>
+    <div class="hit"><b>14</b><span>of them serious enough<br />to cause large, repeated loss</span></div>
+    <div class="done"><b>35</b><span>now closed with a<br />specific system rule</span></div>
+  </div>
+
+  <div class="attacks">
+    <div class="attack">
+      <div class="ahead">1 · Two friends fake the double count</div>
+      <div class="abody">
+        <p class="atk">The second counter simply asks the first what they got. Nothing physically stopped it, and the paperwork looked perfect — two signatures, two matching numbers.</p>
+        <p class="fix"><b>Now blocked:</b> separate slips, opposite ends, handed straight to the supervisor. And a pair whose counts match exactly every single time gets flagged — real counts differ by one now and then.</p>
+      </div>
+    </div>
+    <div class="attack">
+      <div class="ahead">2 · A whole delivery "cancelled" on paper</div>
+      <div class="abody">
+        <p class="atk">Receive the goods for real, store them, then mark the form cancelled. Real stock in your warehouse, no record anywhere — and a count would never find it, because the system never knew it existed.</p>
+        <p class="fix"><b>Now blocked:</b> once goods have been handled, a cancellation is only accepted with a gate record proving they physically left the property again.</p>
+      </div>
+    </div>
+    <div class="attack">
+      <div class="ahead">3 · One wrong pack size, forever</div>
+      <div class="abody">
+        <p class="atk">Set up "1 sack = 480 pieces" when it is really 500. Every sack ever received quietly under-records by 20, and staff who know the real number take the difference. No single transaction ever looks wrong.</p>
+        <p class="fix"><b>Now blocked:</b> before any new pack size can be used, someone physically counts out one full sack, witnessed by two people, and that count is recorded permanently.</p>
+      </div>
+    </div>
+    <div class="attack">
+      <div class="ahead">4 · Rewriting history from the back door</div>
+      <div class="abody">
+        <p class="atk">"Nothing can be edited" was only true inside the software. Anyone with direct access to the computer's database could change an old entry — including the record of who changed it.</p>
+        <p class="fix"><b>Now blocked:</b> the nightly fingerprint sent to you and your auditor. Alter anything in the past and tonight's number stops matching the one you already hold.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="banner fill">
+    <b>Why we are telling you this:</b> a design nobody has attacked is not a safe design — it is an untested one. Everything in the following pages is the version that survived the attack, not the version we first drew up.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>5 / 14</span></div>
+</section>
+
+<!-- ========================================================= 6 STOCK IN == -->
+<section class="page">
+  <div class="kicker">05 · How stock comes in</div>
+  <h1>From the supplier's truck to your shelf</h1>
+  <p class="lead">Seven steps. Goods are <b>not</b> your sellable stock until step 6 is signed.</p>
+
+  <ol class="flow">
+    <li>
+      <div class="dot">1</div>
+      <h4>Truck arrives at the gate</h4>
+      <p>The guard writes down the time, the plate number and the delivery papers. Nothing is unloaded before this. For any delivery with no purchase order, the office phones the supplier on a number we hold on file — never the number printed on the delivery note.</p>
+    </li>
+    <li>
+      <div class="dot">2</div>
+      <h4>Unload into the Receiving Area only</h4>
+      <p>Never straight onto the shelves. Until it is counted and checked, it stays in its own marked lane, away from stock you already own.</p>
+    </li>
+    <li>
+      <div class="dot">3</div>
+      <h4>First count</h4>
+      <p>The receiver counts in sacks or boxes — the way the goods are actually carried — and writes it on their own numbered slip.</p>
+    </li>
+    <li class="key">
+      <div class="dot">4</div>
+      <h4>Second count, from the other end <span class="tag">the key step</span></h4>
+      <p>A different person counts from the opposite side and hands their slip <i>straight to the supervisor</i> — never to the first counter. If the two differ, the supervisor counts a third time, watched and recorded by another staff member.</p>
+    </li>
+    <li>
+      <div class="dot">5</div>
+      <h4>Check the quality</h4>
+      <p>Right thickness, right colour, no yellowing or brittleness, packing dry and intact. One pack in twenty is opened and counted inside. Anything wrong goes to Quarantine straight away.</p>
+    </li>
+    <li>
+      <div class="dot">6</div>
+      <h4>Supervisor approves</h4>
+      <p>The supervisor checks the paperwork <i>and</i> physically spot-checks one line. Only when this is signed does it become stock you can sell.</p>
+    </li>
+    <li>
+      <div class="dot">7</div>
+      <h4>Store it, and record it twice <span class="tag new">hardened</span></h4>
+      <p>New stock goes behind the old stock so the oldest sells first. The warehouse writes it in the bound stock book, and the office types it in — <b>photographing the signed form as they do</b>, so the paper and the typed figure can always be checked against each other.</p>
+    </li>
+  </ol>
+
+  <div class="banner fill">
+    <b>Step 4 is the step that stops losses at the door.</b> It is the moment goods physically exist but are not yet in any record — the easiest moment in the whole business to take something. Two genuinely separate counts close it, and it costs nothing but a few minutes.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>6 / 14</span></div>
+</section>
+
+<!-- ======================================================== 7 STOCK OUT == -->
+<section class="page">
+  <div class="kicker">06 · How stock goes out</div>
+  <h1>From your shelf to the customer</h1>
+  <p class="lead">Same principle in reverse: at least two different people must handle every release, and nothing passes the gate without paper — or without matching the weight it should be.</p>
+
+  <ol class="flow">
+    <li>
+      <div class="dot">1</div>
+      <h4>Order approved, stock set aside</h4>
+      <p>The moment an order is confirmed, that quantity is reserved so the same sacks cannot be promised to a second customer.</p>
+    </li>
+    <li>
+      <div class="dot">2</div>
+      <h4>Picking list issued</h4>
+      <p>The picker is told exactly what to pull and from where. Nobody picks from memory or from a verbal instruction.</p>
+    </li>
+    <li>
+      <div class="dot">3</div>
+      <h4>Pick — oldest stock first</h4>
+      <p>The picker writes down what was actually pulled, even if it differs from what was asked for. If the shelf is short, they stop and call the supervisor instead of substituting.</p>
+    </li>
+    <li class="key">
+      <div class="dot">4</div>
+      <h4>A different person checks it <span class="tag">the key step</span></h4>
+      <p>The checker counts the staged goods against the <i>customer's order</i> — not against the picker's numbers. On top of that, the system picks releases at random for a surprise third recount by someone with no part in that order.</p>
+    </li>
+    <li>
+      <div class="dot">5</div>
+      <h4>Sealed and signed for release</h4>
+      <p>The load is closed with a numbered tamper seal, and the seal number goes on the delivery receipt. The supervisor's signature is what transfers responsibility out of the warehouse.</p>
+    </li>
+    <li class="key">
+      <div class="dot">6</div>
+      <h4>Weighed and checked at the gate <span class="tag new">hardened</span></h4>
+      <p>The guard checks the seal is unbroken, counts the sacks, and <b>weighs the load</b>. If the weight does not match what the paperwork says is on board, the vehicle does not leave. No gate pass, no exit — for anyone, including family and urgent customers.</p>
+    </li>
+    <li>
+      <div class="dot">7</div>
+      <h4>Customer signs on delivery</h4>
+      <p>The signed receipt must be back in the office within 24 hours. If it is not, that alone opens an investigation — a driver cannot run out the clock by simply losing the paperwork.</p>
+    </li>
+  </ol>
+
+  <div class="banner fill">
+    <b>Why the weighing matters:</b> counting sacks only proves how many sacks left — not what was inside them. Weighing catches the swap that counting cannot: a full sack going out labelled as damaged scrap, or a cheap product's sack filled with an expensive one.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>7 / 14</span></div>
+</section>
+
+<!-- ======================================================== 8 BASE UNIT == -->
+<section class="page">
+  <div class="kicker">07 · Products and pack sizes</div>
+  <h1>Sell it in any size. Count it in only one.</h1>
+  <p class="lead">You can have as many pack sizes as you like — per piece, bundle, ream, sack, box, carton, or anything you add later. Underneath, there is only ever <b>one</b> pile of stock.</p>
+
+  <div class="grow">
+  <svg viewBox="0 0 900 330" width="100%" role="img" aria-label="Four pack sizes all converting into one shared stock pool counted in pieces">
+    <g font-family="system-ui, Segoe UI, sans-serif">
+      <g>
+        <rect x="20" y="14" width="190" height="72" rx="8" fill="#eaf2fc" stroke="#2a78d6" stroke-width="2"/>
+        <text x="115" y="45" text-anchor="middle" font-size="19" font-weight="650" fill="#0f172a">1 SACK</text>
+        <text x="115" y="68" text-anchor="middle" font-size="15" fill="#52514e">= 500 pieces</text>
+      </g>
+      <g>
+        <rect x="243" y="14" width="190" height="72" rx="8" fill="#eaf2fc" stroke="#2a78d6" stroke-width="2"/>
+        <text x="338" y="45" text-anchor="middle" font-size="19" font-weight="650" fill="#0f172a">1 REAM</text>
+        <text x="338" y="68" text-anchor="middle" font-size="15" fill="#52514e">= 100 pieces</text>
+      </g>
+      <g>
+        <rect x="466" y="14" width="190" height="72" rx="8" fill="#eaf2fc" stroke="#2a78d6" stroke-width="2"/>
+        <text x="561" y="45" text-anchor="middle" font-size="19" font-weight="650" fill="#0f172a">1 BUNDLE</text>
+        <text x="561" y="68" text-anchor="middle" font-size="15" fill="#52514e">= 20 pieces</text>
+      </g>
+      <g>
+        <rect x="689" y="14" width="190" height="72" rx="8" fill="#eaf2fc" stroke="#2a78d6" stroke-width="2"/>
+        <text x="784" y="45" text-anchor="middle" font-size="19" font-weight="650" fill="#0f172a">1 PIECE</text>
+        <text x="784" y="68" text-anchor="middle" font-size="15" fill="#52514e">= 1 piece</text>
+      </g>
+
+      <g stroke="#898781" stroke-width="2" fill="none">
+        <path d="M115 86 V120 H450"/>
+        <path d="M338 86 V120"/>
+        <path d="M561 86 V120"/>
+        <path d="M784 86 V120 H450"/>
+        <path d="M450 120 V150"/>
+      </g>
+      <path d="M450 162 l-7 -12 h14 z" fill="#898781"/>
+
+      <rect x="20" y="168" width="859" height="74" rx="8" fill="#0f172a"/>
+      <text x="450" y="200" text-anchor="middle" font-size="19" font-weight="650" fill="#ffffff">ONE STOCK POOL — always counted in PIECES</text>
+      <text x="450" y="225" text-anchor="middle" font-size="14.5" fill="#c9d3e2">There is no separate "sack stock" and "piece stock" that could ever disagree</text>
+
+      <rect x="20" y="262" width="420" height="56" rx="8" fill="#e6f7f0" stroke="#1baf7a" stroke-width="2"/>
+      <text x="42" y="286" font-size="15.5" font-weight="650" fill="#0f172a">Staff types:  5 SACKS</text>
+      <text x="42" y="307" font-size="14.5" fill="#52514e">System shows:  5 × 500 = 2,500 pieces added</text>
+
+      <rect x="459" y="262" width="420" height="56" rx="8" fill="#e6f7f0" stroke="#1baf7a" stroke-width="2"/>
+      <text x="481" y="286" font-size="15.5" font-weight="650" fill="#0f172a">Staff types:  3 BUNDLES</text>
+      <text x="481" y="307" font-size="14.5" fill="#52514e">System shows:  3 × 20 = 60 pieces taken out</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="minis two">
+    <div class="mini"><b>Staff never do arithmetic</b>They type what they are holding — "5 sacks" — and the screen answers "that is 2,500 pieces, correct?" before anything is saved.</div>
+    <div class="mini"><b>A new pack size must be proven first</b>Before "1 sack = 500" can be used, someone counts out one full sack in front of two witnesses. A typo here would steal from you on every single sack, forever.</div>
+  </div>
+
+  <div class="banner fill">
+    <b>Why that second point matters more than it looks:</b> a wrong pack size is the only mistake in this entire system that never shows up as a discrepancy. Every transaction looks perfectly normal while the difference quietly walks out the door. So the number gets physically proven once, and then locked.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>8 / 14</span></div>
+</section>
+
+<!-- ============================================================ 9 ROLES == -->
+<section class="page">
+  <div class="kicker">08 · Who does what</div>
+  <h1>Every movement has a name attached to it</h1>
+  <p class="lead">Small teams are fine — one person can wear several hats. But four pairs of jobs must never sit with the same person.</p>
+
+  <div class="roles">
+    <div class="role"><b>Receiver</b><span>Counts and inspects what arrives from suppliers.</span></div>
+    <div class="role"><b>Checker</b><span>Counts a second time, from the other end, on a separate slip.</span></div>
+    <div class="role"><b>Picker</b><span>Pulls goods for orders against a picking list.</span></div>
+    <div class="role"><b>Encoder</b><span>Types signed papers into the system, photographing each one. Never touches goods, never approves.</span></div>
+    <div class="role"><b>Supervisor</b><span>Verifies receipts, authorises releases, settles disputed counts.</span></div>
+    <div class="role"><b>Manager / Owner</b><span>Approves corrections and write-offs. Sees everything.</span></div>
+  </div>
+
+  <h3 style="font-size:12.5pt;color:#0f172a;margin:0 0 4mm;">Four pairs that must never be the same person</h3>
+  <div class="pairs">
+    <div class="pair"><span>Picker</span><span class="never">✕</span><span>Checker</span></div>
+    <div class="pair"><span>Requests a correction</span><span class="never">✕</span><span>Approves it</span></div>
+    <div class="pair"><span>Holds the goods</span><span class="never">✕</span><span>Keeps the only record</span></div>
+    <div class="pair"><span>Runs operations</span><span class="never">✕</span><span>Audits them</span></div>
+  </div>
+
+  <div class="minis two">
+    <div class="mini"><b>Nobody can grant themselves an exception</b>"The encoder is off sick, so I did it myself" is not something staff can decide. Only you can allow it, in the moment, and it switches itself off at the end of that day.</div>
+    <div class="mini"><b>Screens lock after three minutes</b>So a transaction can never be done under somebody else's name while they are away from the counter.</div>
+  </div>
+
+  <div class="banner fill">
+    <b>If your branch is too small to split these,</b> the fix is not to give up the rule — it is that you personally approve every correction, and the daily report comes to your phone whether or not anything is wrong.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>9 / 14</span></div>
+</section>
+
+<!-- ====================================================== 10 WAREHOUSE == -->
+<section class="page">
+  <div class="kicker">09 · The warehouse itself</div>
+  <h1>Separate areas do half the work</h1>
+  <p class="lead">Goods that are not yet yours, and goods that must never be sold, are kept physically apart — not just marked differently in the computer.</p>
+
+  <div class="grow">
+  <svg viewBox="0 0 900 650" width="100%" role="img" aria-label="Warehouse floor plan: goods enter through the gate into receiving, then inspection, storage, picking and release, and leave through the same gate. Quarantine and returns are kept in a separate area.">
+    <g font-family="system-ui, Segoe UI, sans-serif">
+      <rect x="10" y="10" width="880" height="460" rx="10" fill="#fbfbfa" stroke="#e1e0d9" stroke-width="2"/>
+      <text x="32" y="40" font-size="14" font-weight="650" fill="#898781" letter-spacing="1.6">NORMAL FLOW</text>
+
+      <rect x="30" y="58" width="88" height="396" rx="8" fill="#0f172a"/>
+      <text transform="rotate(-90 74 256)" x="74" y="256" text-anchor="middle" font-size="21" font-weight="650" fill="#ffffff">GATE</text>
+      <text transform="rotate(-90 74 256)" x="74" y="282" text-anchor="middle" font-size="13" fill="#c9d3e2">guard counts and weighs every load</text>
+
+      <rect x="148" y="58" width="330" height="86" rx="7" fill="#eaf2fc" stroke="#2a78d6" stroke-width="2"/>
+      <text x="168" y="92" font-size="18" font-weight="650" fill="#0f172a">1. RECEIVING</text>
+      <text x="168" y="118" font-size="14" fill="#52514e">one delivery per marked lane</text>
+
+      <rect x="510" y="58" width="330" height="86" rx="7" fill="#eaf2fc" stroke="#2a78d6" stroke-width="2"/>
+      <text x="530" y="92" font-size="18" font-weight="650" fill="#0f172a">2. INSPECTION</text>
+      <text x="530" y="118" font-size="14" fill="#52514e">good light, open a sample pack</text>
+
+      <rect x="148" y="184" width="692" height="96" rx="7" fill="#f2f3ef" stroke="#898781" stroke-width="2"/>
+      <text x="168" y="220" font-size="18" font-weight="650" fill="#0f172a">3. STORAGE</text>
+      <text x="168" y="248" font-size="14" fill="#52514e">fixed places · bound stock book on every stack · off the floor · out of the sun</text>
+
+      <rect x="148" y="320" width="330" height="86" rx="7" fill="#e6f7f0" stroke="#1baf7a" stroke-width="2"/>
+      <text x="168" y="354" font-size="18" font-weight="650" fill="#0f172a">4. PICKING</text>
+      <text x="168" y="380" font-size="14" fill="#52514e">oldest stock at the front</text>
+
+      <rect x="510" y="320" width="330" height="86" rx="7" fill="#e6f7f0" stroke="#1baf7a" stroke-width="2"/>
+      <text x="530" y="354" font-size="18" font-weight="650" fill="#0f172a">5. RELEASE</text>
+      <text x="530" y="380" font-size="14" fill="#52514e">tagged, checked, sealed, emptied daily</text>
+
+      <g stroke="#2a78d6" stroke-width="2.5" fill="none">
+        <path d="M118 101 H140"/>
+        <path d="M478 101 H502"/>
+        <path d="M675 144 V178"/>
+        <path d="M313 280 V314"/>
+        <path d="M478 363 H502"/>
+        <path d="M675 406 V436 H128"/>
+      </g>
+      <g fill="#2a78d6">
+        <path d="M148 101 l-11 -6 v12 z"/>
+        <path d="M510 101 l-11 -6 v12 z"/>
+        <path d="M675 186 l-6 -11 h12 z"/>
+        <path d="M313 322 l-6 -11 h12 z"/>
+        <path d="M510 363 l-11 -6 v12 z"/>
+        <path d="M120 436 l11 -6 v12 z"/>
+      </g>
+      <text x="150" y="425" font-size="13" font-weight="600" fill="#2a78d6">goods out</text>
+      <text x="150" y="52" font-size="13" font-weight="600" fill="#2a78d6">goods in</text>
+
+      <rect x="10" y="485" width="880" height="155" rx="10" fill="#fbfbfa" stroke="#e1e0d9" stroke-width="2" stroke-dasharray="8 6"/>
+      <text x="32" y="510" font-size="14" font-weight="650" fill="#898781" letter-spacing="1.6">KEPT PHYSICALLY APART — and cleared on a deadline</text>
+
+      <rect x="45" y="522" width="390" height="100" rx="7" fill="#fbeaea" stroke="#d03b3b" stroke-width="2"/>
+      <rect x="45" y="522" width="390" height="26" rx="7" fill="#d03b3b"/>
+      <text x="60" y="541" font-size="13" font-weight="650" fill="#ffffff" letter-spacing="1.2">RED TAGS · 14-DAY LIMIT</text>
+      <text x="60" y="578" font-size="18" font-weight="650" fill="#0f172a">QUARANTINE</text>
+      <text x="60" y="604" font-size="14" fill="#52514e">damaged, disputed or held goods · roped off</text>
+
+      <rect x="465" y="522" width="390" height="100" rx="7" fill="#fef6e3" stroke="#c98500" stroke-width="2"/>
+      <rect x="465" y="522" width="390" height="26" rx="7" fill="#c98500"/>
+      <text x="480" y="541" font-size="13" font-weight="650" fill="#ffffff" letter-spacing="1.2">YELLOW TAGS · 48-HOUR LIMIT</text>
+      <text x="480" y="578" font-size="18" font-weight="650" fill="#0f172a">RETURNS</text>
+      <text x="480" y="604" font-size="14" fill="#52514e">back from customers, not yet graded</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="minis fill">
+    <div class="mini"><b>Nothing goes straight to the shelf</b>Deliveries are unloaded into the receiving lane, never into storage, until they are counted and approved.</div>
+    <div class="mini"><b>Nothing sleeps in the release area</b>It is emptied every day, so there is never a pile of goods sitting outside both storage and the records.</div>
+    <div class="mini"><b>Nothing parks in quarantine</b>Damaged and held goods have a deadline. Past it, a manager must physically re-inspect — so it cannot become a hiding place.</div>
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>10 / 14</span></div>
+</section>
+
+<!-- ======================================================== 11 BIN CARD = -->
+<section class="page">
+  <div class="kicker">10 · The cheapest control you will buy</div>
+  <h1>Two records, kept by two different people</h1>
+  <p class="lead">A bound, numbered stock book sits at every stack. The warehouse writes in it by hand as goods move. The office separately records the same movements from signed papers.</p>
+
+  <div class="grow">
+  <svg viewBox="0 0 900 400" width="100%" role="img" aria-label="A handwritten bound stock book on the left and the system record on the right, showing the same four movements and the same closing balance, which must match every day">
+    <g font-family="system-ui, Segoe UI, sans-serif">
+      <rect x="14" y="14" width="352" height="360" rx="8" fill="#ffffff" stroke="#52514e" stroke-width="2"/>
+      <rect x="14" y="14" width="352" height="42" rx="8" fill="#52514e"/>
+      <text x="34" y="42" font-size="15" font-weight="650" fill="#ffffff">STOCK BOOK p.114 — Bay A-3</text>
+      <g font-size="14" fill="#898781">
+        <text x="34" y="90">Date</text><text x="110" y="90">Document</text><text x="228" y="90">In / Out</text><text x="310" y="90">Balance</text>
+      </g>
+      <line x1="32" y1="104" x2="348" y2="104" stroke="#e1e0d9" stroke-width="1.5"/>
+      <g font-size="15" fill="#0b0b0b">
+        <text x="34" y="140">08/05</text><text x="110" y="140">RR-0231</text><text x="228" y="140" fill="#008300">+2,500</text><text x="310" y="140">2,500</text>
+        <text x="34" y="184">08/05</text><text x="110" y="184">SI-0442</text><text x="228" y="184" fill="#d03b3b">−60</text><text x="310" y="184">2,440</text>
+        <text x="34" y="228">08/05</text><text x="110" y="228">DR-1188</text><text x="228" y="228" fill="#d03b3b">−500</text><text x="310" y="228">1,940</text>
+        <text x="34" y="272">08/05</text><text x="110" y="272">RRR-0067</text><text x="228" y="272" fill="#008300">+40</text><text x="310" y="272">1,980</text>
+      </g>
+      <line x1="32" y1="294" x2="348" y2="294" stroke="#e1e0d9" stroke-width="1.5"/>
+      <text x="34" y="328" font-size="15.5" font-weight="650" fill="#0f172a">Balance in the book</text>
+      <text x="310" y="328" font-size="18" font-weight="650" fill="#0f172a">1,980</text>
+      <text x="34" y="356" font-size="13" fill="#898781">bound numbered page · photographed at closing</text>
+
+      <circle cx="450" cy="180" r="42" fill="#0ca30c"/>
+      <path d="M430 170 h40 M430 190 h40" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+      <text x="450" y="256" text-anchor="middle" font-size="16" font-weight="650" fill="#0f172a">must match</text>
+      <text x="450" y="280" text-anchor="middle" font-size="14" fill="#52514e">checked every day</text>
+
+      <rect x="534" y="14" width="352" height="360" rx="8" fill="#ffffff" stroke="#2a78d6" stroke-width="2"/>
+      <rect x="534" y="14" width="352" height="42" rx="8" fill="#2a78d6"/>
+      <text x="554" y="42" font-size="15" font-weight="650" fill="#ffffff">SYSTEM — Tiny Plastic · Bay A-3</text>
+      <g font-size="14" fill="#898781">
+        <text x="554" y="90">Date</text><text x="630" y="90">Document</text><text x="748" y="90">In / Out</text><text x="830" y="90">Balance</text>
+      </g>
+      <line x1="552" y1="104" x2="868" y2="104" stroke="#e1e0d9" stroke-width="1.5"/>
+      <g font-size="15" fill="#0b0b0b">
+        <text x="554" y="140">08/05</text><text x="630" y="140">RR-0231</text><text x="748" y="140" fill="#008300">+2,500</text><text x="830" y="140">2,500</text>
+        <text x="554" y="184">08/05</text><text x="630" y="184">SI-0442</text><text x="748" y="184" fill="#d03b3b">−60</text><text x="830" y="184">2,440</text>
+        <text x="554" y="228">08/05</text><text x="630" y="228">DR-1188</text><text x="748" y="228" fill="#d03b3b">−500</text><text x="830" y="228">1,940</text>
+        <text x="554" y="272">08/05</text><text x="630" y="272">RRR-0067</text><text x="748" y="272" fill="#008300">+40</text><text x="830" y="272">1,980</text>
+      </g>
+      <line x1="552" y1="294" x2="868" y2="294" stroke="#e1e0d9" stroke-width="1.5"/>
+      <text x="554" y="328" font-size="15.5" font-weight="650" fill="#0f172a">Balance in the system</text>
+      <text x="830" y="328" font-size="18" font-weight="650" fill="#0f172a">1,980</text>
+      <text x="554" y="356" font-size="13" fill="#898781">encoded in the office, from photographed papers</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="minis">
+    <div class="mini"><b>If the two agree</b>Your stock is almost certainly right, and you did not have to close the warehouse and count to find that out.</div>
+    <div class="mini"><b>If the two disagree</b>You know within a day — and the gap points at a specific date, a specific document, and a specific pair of initials.</div>
+    <div class="mini"><b>And it cannot be rewritten</b>Pages are bound and numbered, and each day's page is photographed at closing. A page rewritten later will not match its own photograph.</div>
+  </div>
+
+  <div class="banner fill">
+    <b>Why two records instead of one:</b> two different people, working from two different sources, cannot both be wrong in the same direction by accident. This is what a barcode scanner would have done for you — done instead with a bound notebook and a ballpen.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>11 / 14</span></div>
+</section>
+
+<!-- ======================================================= 12 DASHBOARD = -->
+<section class="page">
+  <div class="kicker">11 · What you see</div>
+  <h1>Your business on one screen</h1>
+  <p class="lead">Open it any time, from anywhere. And every evening, a short report comes to your phone — <b>whether or not anything is wrong</b>, so that silence is never mistaken for good news.</p>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="label">Stock value on hand</div>
+      <div class="value">₱2.41M</div>
+      <span class="chip ok">✓ Up to date</span>
+    </div>
+    <div class="tile">
+      <div class="label">Shrinkage this month</div>
+      <div class="value">0.3%</div>
+      <span class="chip ok">✓ Within target</span>
+    </div>
+    <div class="tile">
+      <div class="label">Counts done on schedule</div>
+      <div class="value">100%</div>
+      <span class="chip ok">✓ None skipped</span>
+    </div>
+    <div class="tile">
+      <div class="label">Corrections this month</div>
+      <div class="value">5</div>
+      <span class="chip warn">! Review these</span>
+    </div>
+    <div class="tile">
+      <div class="label">Open investigations</div>
+      <div class="value">2</div>
+      <span class="chip warn">! 1 is over 3 days old</span>
+    </div>
+    <div class="tile">
+      <div class="label">Blocked negative stock</div>
+      <div class="value">0</div>
+      <span class="chip ok">✓ Normal</span>
+    </div>
+  </div>
+
+  <div class="alerts">
+    <div class="head">Sent to your phone every evening — 5 August</div>
+    <div class="row"><span class="chip crit">✕ Serious</span><span><b>Sando Bag Large</b> — counted 18 sacks, system says 20. Investigation opened, assigned to the branch manager.</span></div>
+    <div class="row"><span class="chip warn">! Check</span><span><b>2 corrections approved today</b> — both by the branch manager, both under ₱1,000. Reasons: damage in storage, encoding error.</span></div>
+    <div class="row"><span class="chip warn">! Check</span><span><b>1 delivery receipt still not returned</b> — dispatched 31 hours ago, past the 24-hour limit. Driver and route named.</span></div>
+    <div class="row"><span class="chip ok">✓ Clean</span><span><b>All 34 documents encoded and photographed</b>, all form numbers accounted for, staging area empty, record fingerprint matches.</span></div>
+  </div>
+
+  <div class="note">Figures shown are examples only. The point is what you are told without having to ask: not just what you own, but what looks wrong today — including whether the checks themselves actually happened.</div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>12 / 14</span></div>
+</section>
+
+<!-- ============================================================ 13 BUY == -->
+<section class="page">
+  <div class="kicker">12 · What this actually needs</div>
+  <h1>Almost none of it is technology</h1>
+  <p class="lead">The controls that stop losses are made of paper, paint and habit. That is deliberate — they work during a brownout, and staff can learn them in a day.</p>
+
+  <div class="buy">
+    <div>
+      <h3 style="font-size:12.5pt;color:#0f172a;margin:0 0 3mm;">Buy now — all of it is cheap</h3>
+      <ul>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> Numbered form booklets from a local print shop</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> <span><b>Bound, numbered stock books</b> for each storage bay <em>— replaces loose cards</em></span></li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> <span>A <b>platform scale at the gate</b> <em>— one-time purchase</em></span></li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> <span><b>Numbered tamper-evident seals</b> for outgoing loads</span></li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> Paint, rope, signs and red/yellow tags for the areas</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> Lockers at the warehouse entrance for personal bags</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> A UPS for the office computer — brownouts are routine</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span> An ordinary phone for photographing forms, damage and disposals</li>
+      </ul>
+    </div>
+    <div>
+      <h3 style="font-size:12.5pt;color:#0f172a;margin:0 0 3mm;">Do not buy yet</h3>
+      <ul>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span> Barcode scanners</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span> RFID tags or readers</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span> Automated racking or conveyors</li>
+        <li><span class="mark"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d03b3b"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span> A separate warehouse management system</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="banner warn fill">
+    <b>Why not buy the scanners now?</b> Scanners layered on loose habits just produce faster, more confident mistakes — the wrong number, entered more quickly and trusted more. Get six months of clean counts first. Then, if it still looks worth it, add barcodes to your highest-value items only, printed in-house and read with an ordinary phone.
+  </div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>13 / 14</span></div>
+</section>
+
+<!-- ======================================================= 14 DECISIONS == -->
+<section class="page">
+  <div class="kicker">13 · Over to you</div>
+  <h1>Six decisions we need from you</h1>
+  <p class="lead">Each of these changes how the process is built, so we need them before work starts — not settings we can flip later.</p>
+
+  <div class="decisions">
+    <div class="decision first">
+      <b>1. Who is your auditor?  ← the most important one</b>
+      <span>Someone independent who does <i>not</i> run daily operations. Most of the safeguards in this document only work if a genuinely independent person checks them. If this role goes to someone inside daily operations, a large part of the protection becomes decorative.</span>
+    </div>
+    <div class="decision">
+      <b>2. Approval limits</b>
+      <span>Up to what peso value can a branch manager approve a stock correction alone, before it has to come to you?</span>
+    </div>
+    <div class="decision">
+      <b>3. One stock pool or two?</b>
+      <span>Do the store counter and wholesale customers draw from the same stock, or should some be set aside for each?</span>
+    </div>
+    <div class="decision">
+      <b>4. Delivery dispute window</b>
+      <span>How long does a customer have to report a short delivery — 24, 48 or 72 hours — before the record is final?</span>
+    </div>
+    <div class="decision">
+      <b>5. Your high-risk products</b>
+      <span>Which items are expensive, small, or most often stolen? Those get counted weekly instead of monthly.</span>
+    </div>
+    <div class="decision">
+      <b>6. Branches</b>
+      <span>How many branches do you expect, and roughly when? It is far cheaper to allow for this now than to retrofit it.</span>
+    </div>
+  </div>
+
+  <h3 style="font-size:12.5pt;color:#0f172a;margin:0 0 3mm;">What happens next</h3>
+  <div class="steps">
+    <div class="step"><b>1</b>You answer the six questions</div>
+    <div class="step"><b>2</b>We finalise the process with your supervisor</div>
+    <div class="step"><b>3</b>The system is built</div>
+    <div class="step"><b>4</b>Four weeks running paper and system side by side</div>
+    <div class="step"><b>5</b>Go live, starting from a counted opening balance</div>
+  </div>
+
+  <div class="banner fill">
+    <b>One request before go-live:</b> a full, careful count that you personally sign off. A system that starts from wrong numbers will produce differences forever, and your staff will stop trusting it in the first month.
+  </div>
+
+  <div class="note">This summary covers the decisions and the shape of the process. Two fuller documents sit behind it: the <b>Business Process Design</b> (every step, form, rule and exception, written so a software team can build from it without guessing) and the <b>Fraud Audit</b> (all 35 attacks we found against our own design, and the exact rule that closes each one).</div>
+
+  <div class="foot"><span>Inventory System · Executive Summary · v2.0</span><span>14 / 14</span></div>
+</section>
+
+</body>
+</html>

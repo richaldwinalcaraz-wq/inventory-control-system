@@ -1,0 +1,1053 @@
+// Phase 1 schema — built incrementally per the approved build order.
+// See C:\Users\user\.claude\plans\cheerful-marinating-pebble.md for the full design.
+// DB naming standard (CLAUDE.md sec.12): snake_case tables/columns. Every
+// multi-word field carries an explicit @map to a snake_case column name —
+// Prisma does NOT do this automatically, it only converts what @@map says
+// about the table itself.
+//
+// A few objects exist in the database that are NOT declared here because
+// Prisma's schema DSL can't express them (or we chose hand-written SQL for
+// clarity): the conversion_rate_version lock triggers, the UTC timezone
+// fix, and a partial unique index enforcing "one Opening Balance per
+// product per branch, ever" on stock_ledger. See their migration files
+// under prisma/migrations for the SQL. IMPORTANT: because of this, never
+// run `prisma migrate dev` against a database that already has these
+// applied — its drift detection doesn't know about them and will propose
+// dropping them. Use `prisma migrate deploy` (or hand-apply + `migrate
+// resolve --applied`, the pattern used for all of the above) instead.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Branch (minimal for now — full fields land with step 4c) ──────────────
+
+model Branch {
+  id        String    @id @default(uuid())
+  code      String    @unique // e.g. "ILO" — used in document numbers (MB-6)
+  name      String
+  status    String    @default("ACTIVE") // ACTIVE | ARCHIVED — never hard-deleted
+  openedAt  DateTime? @map("opened_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  users                     User[]
+  userBranchRoles           UserBranchRole[]
+  warehouses                Warehouse[]
+  stockLedgers              StockLedger[]
+  periods                   Period[]
+  approvalThresholds        ApprovalThreshold[]
+  documentBookletRegistries DocumentBookletRegistry[]
+  documentSequences         DocumentSequence[]
+  documentNumbers           DocumentNumber[]
+  gateLogEntries            GateLogEntry[]
+  receivingReports          ReceivingReport[]
+  retailSales               RetailSale[]
+  adjustmentRequests        AdjustmentRequest[]
+  salesOrders               SalesOrder[]
+  stockReservations         StockReservation[]
+
+  @@map("branch")
+}
+
+// ── Identity & RBAC ─────────────────────────────────────────────────────
+
+enum RoleName {
+  OWNER
+  BRANCH_MANAGER
+  WAREHOUSE_SUPERVISOR
+  WAREHOUSE_RECEIVER
+  WAREHOUSE_PICKER
+  WAREHOUSE_CHECKER
+  ENCODER
+  CASHIER
+  SALES_REP
+  AUDITOR // role slot only — assigned to a real named user once the client answers client-decisions-needed.md #1
+  SECURITY_GUARD
+  SYSTEM_ADMINISTRATOR
+}
+
+enum UserStatus {
+  ACTIVE
+  DEACTIVATED
+}
+
+model User {
+  id            String     @id @default(uuid())
+  branchId      String?    @map("branch_id") // primary branch; nullable for Owner/Auditor who span branches
+  fullName      String     @map("full_name")
+  email         String?    @unique
+  username      String     @unique // named account, BR-078 — no shared logins
+  passwordHash  String     @map("password_hash")
+  pinHash       String?    @map("pin_hash") // per-user PIN for shared-terminal re-auth (G-30)
+  role          RoleName // primary role
+  status        UserStatus @default(ACTIVE)
+  deactivatedAt DateTime?  @map("deactivated_at")
+  deactivatedBy String?    @map("deactivated_by")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  branch          Branch?               @relation(fields: [branchId], references: [id])
+  roleAssignments UserBranchRole[]
+  sessions        Session[]
+  pinTokens       TransactionPinToken[]
+
+  @@map("app_user")
+}
+
+// Supports "primary role per branch" while allowing Owner/Auditor/Branch Manager
+// to hold roles that span or apply outside their primary branch.
+model UserBranchRole {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  branchId  String   @map("branch_id")
+  role      RoleName
+  grantedAt DateTime @default(now()) @map("granted_at")
+  grantedBy String   @map("granted_by")
+
+  user   User   @relation(fields: [userId], references: [id])
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@unique([userId, branchId, role])
+  @@map("user_branch_role")
+}
+
+enum PermissionEffect {
+  CREATE
+  APPROVE
+  VIEW
+  NONE
+}
+
+// Server-side permission matrix — seeded from business-process-design.md sec.4.2
+// at migration/seed time. Every API route must call assertPermission(), never
+// rely on this being hidden in the UI.
+model RolePermission {
+  id     String           @id @default(uuid())
+  role   RoleName
+  action String // e.g. "receiving.count.create", "receiving.encode.post"
+  effect PermissionEffect
+
+  @@unique([role, action])
+  @@map("role_permission")
+}
+
+// ── Session security (G-30 / G-29) ─────────────────────────────────────
+
+model Session {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  deviceLabel  String?   @map("device_label")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastActiveAt DateTime  @default(now()) @map("last_active_at") // updated on every authenticated request
+  expiresAt    DateTime  @map("expires_at")
+  revokedAt    DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("session")
+}
+
+// Short-lived token proving fresh PIN re-auth, minted immediately before a
+// posting/approval call and consumed atomically on use. See plan sec.5.
+model TransactionPinToken {
+  id                String    @id @default(uuid())
+  userId            String    @map("user_id")
+  sessionId         String    @map("session_id")
+  issuedAt          DateTime  @default(now()) @map("issued_at")
+  expiresAt         DateTime  @map("expires_at") // issuedAt + PIN_TOKEN_TTL_SECONDS, single use
+  consumedAt        DateTime? @map("consumed_at")
+  consumedForAction String?   @map("consumed_for_action") // e.g. "receiving.encode:RR-ILO-2026-000231"
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("transaction_pin_token")
+}
+
+model EmergencyElevation {
+  id        String    @id @default(uuid())
+  branchId  String    @map("branch_id")
+  grantedTo String    @map("granted_to") // userId being elevated
+  grantedBy String    @map("granted_by") // must be OWNER
+  fromRole  RoleName  @map("from_role")
+  toRole    RoleName  @map("to_role") // the role being temporarily assumed
+  reason    String
+  grantedAt DateTime  @default(now()) @map("granted_at")
+  expiresAt DateTime  @map("expires_at") // hard end-of-day; not renewable without a fresh grant (no update endpoint exists)
+  revokedAt DateTime? @map("revoked_at")
+
+  @@map("emergency_elevation")
+}
+
+// ── Domain masters ─────────────────────────────────────────────────────
+// Catalog data (Category/Supplier/UnitOfMeasure/Product/ProductVariant) is
+// shared across branches, not branch-scoped. Warehouse and everything below
+// it is branch-scoped.
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String
+  parentId  String?  @map("parent_id")
+  status    String   @default("ACTIVE") // ACTIVE | ARCHIVED — archived, never hard-deleted
+  createdAt DateTime @default(now()) @map("created_at")
+
+  parent   Category?  @relation("CategoryToParent", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryToParent")
+  products Product[]
+
+  @@map("category")
+}
+
+model Supplier {
+  id           String   @id @default(uuid())
+  name         String
+  contactPhone String   @map("contact_phone") // number ON FILE — used for G-04 call-back verification, never sourced from delivery paperwork
+  address      String?
+  status       String   @default("ACTIVE")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  receivingReports ReceivingReport[]
+
+  @@map("supplier")
+}
+
+model UnitOfMeasure {
+  id   String @id @default(uuid())
+  code String @unique // e.g. "PC", "KG", "ROLL"
+  name String
+
+  products            Product[]
+  conversionRatesFrom ConversionRateVersion[] @relation("ConversionFromUnit")
+  conversionRatesTo   ConversionRateVersion[] @relation("ConversionToUnit")
+
+  @@map("unit_of_measure")
+}
+
+model Warehouse {
+  id        String   @id @default(uuid())
+  branchId  String   @map("branch_id")
+  code      String
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  branch    Branch              @relation(fields: [branchId], references: [id])
+  locations WarehouseLocation[]
+
+  @@unique([branchId, code])
+  @@map("warehouse")
+}
+
+enum WarehouseZone {
+  RECEIVING
+  STORAGE
+  PICKING
+  RELEASE
+  QUARANTINE
+  RETURNS
+  COUNTER // Phase 2 — separate sales-floor/counter location, replenished from STORAGE via an intra-branch transfer. Untracked counter stock is a named leak risk (business-process-design.md sec.8.1) — retail never posts directly against STORAGE.
+}
+
+model WarehouseLocation {
+  id          String        @id @default(uuid())
+  warehouseId String        @map("warehouse_id")
+  zone        WarehouseZone
+  code        String
+  name        String
+
+  warehouse          Warehouse           @relation(fields: [warehouseId], references: [id])
+  stockLedgers       StockLedger[]
+  stockBalances      StockBalance[]
+  adjustmentRequests AdjustmentRequest[]
+
+  @@unique([warehouseId, code])
+  @@map("warehouse_location")
+}
+
+enum CycleCountClass {
+  A
+  B
+  C
+}
+
+model Product {
+  id              String          @id @default(uuid())
+  name            String
+  categoryId      String?         @map("category_id")
+  baseUnitId      String          @map("base_unit_id") // exactly one base unit, fixed at creation — never changed once set
+  cycleCountClass CycleCountClass @default(C) @map("cycle_count_class") // defaulted per client-decisions-needed.md's ABC recommendation
+  unitWeightKg    Decimal?        @map("unit_weight_kg") @db.Decimal(10, 3) // nullable — retail-only SKUs may never need it; Wholesale's gate weight-check (Phase 2) hard-blocks release for any line whose product lacks this rather than silently skipping the check
+  status          String          @default("ACTIVE")
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  category Category?        @relation(fields: [categoryId], references: [id])
+  baseUnit UnitOfMeasure    @relation(fields: [baseUnitId], references: [id])
+  variants ProductVariant[]
+
+  @@map("product")
+}
+
+model ProductVariant {
+  id           String   @id @default(uuid())
+  productId    String   @map("product_id")
+  sku          String   @unique
+  barcode      String? // reference field only — not a workflow requirement, client warehouse is fully manual
+  sellingPrice Decimal  @map("selling_price") @db.Decimal(12, 2)
+  status       String   @default("ACTIVE")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  product              Product                 @relation(fields: [productId], references: [id])
+  conversionRates      ConversionRateVersion[]
+  stockLedgers         StockLedger[]
+  stockBalances        StockBalance[]
+  receivingReportLines ReceivingReportLine[]
+  countSlipLines       CountSlipLine[]
+  retailSaleLines      RetailSaleLine[]
+  adjustmentRequests   AdjustmentRequest[]
+  salesOrderLines      SalesOrderLine[]
+  stockReservations    StockReservation[]
+
+  @@map("product_variant")
+}
+
+enum ConversionRateStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUPERSEDED
+  REJECTED
+}
+
+// Effective-dated conversion rate between two units for a variant. Requires
+// two independent witnessed physical verifications (BR-068) before it can go
+// ACTIVE, and is locked (app layer + DB trigger, belt-and-suspenders) the
+// instant a posted StockLedger row references it.
+model ConversionRateVersion {
+  id               String               @id @default(uuid())
+  productVariantId String               @map("product_variant_id")
+  fromUnitId       String               @map("from_unit_id")
+  toUnitId         String               @map("to_unit_id")
+  rate             Decimal              @db.Decimal(18, 6)
+  status           ConversionRateStatus @default(PENDING_VERIFICATION)
+  proposedBy       String               @map("proposed_by")
+  verifiedByUser1  String?              @map("verified_by_user_1")
+  verifiedByUser2  String?              @map("verified_by_user_2") // must be independent of proposer and of verifiedByUser1 — enforced at the application layer
+  effectiveFrom    DateTime?            @map("effective_from")
+  lockedAt         DateTime?            @map("locked_at") // set the instant a posted StockLedger row references this version
+  createdAt        DateTime             @default(now()) @map("created_at")
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  fromUnit       UnitOfMeasure  @relation("ConversionFromUnit", fields: [fromUnitId], references: [id])
+  toUnit         UnitOfMeasure  @relation("ConversionToUnit", fields: [toUnitId], references: [id])
+  stockLedgers   StockLedger[]
+
+  @@map("conversion_rate_version")
+}
+
+// ── The ledger — single source of truth for all stock quantities ────────
+// Rows are append-only and immutable: no updatedAt field, and nothing in the
+// application layer ever issues an UPDATE against this table after insert.
+
+enum MovementType {
+  RECEIVING
+  OPENING_BALANCE // built now; posting path intentionally left unrouted in the UI until Phase 5 cutover
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  TRANSFER_IN
+  TRANSFER_OUT
+  SALE_OUT
+  RETURN_IN
+  RETURN_OUT
+  REVERSAL
+}
+
+model StockLedger {
+  id                      BigInt       @id @default(autoincrement())
+  branchId                String       @map("branch_id")
+  productVariantId        String       @map("product_variant_id")
+  warehouseLocationId     String       @map("warehouse_location_id")
+  batchId                 String       @default("") @map("batch_id") // "" = untracked/no batch — never null, keeps unique constraints reliable
+  quantityDeltaBase       Decimal      @map("quantity_delta_base") @db.Decimal(18, 4)
+  movementType            MovementType @map("movement_type")
+  unitCostAtMovement      Decimal      @map("unit_cost_at_movement") @db.Decimal(18, 4) // moving weighted average at time of movement
+  conversionRateVersionId String?      @map("conversion_rate_version_id")
+  referenceType           String       @map("reference_type") // e.g. "ReceivingReport"
+  referenceId             String       @map("reference_id")
+  documentNumber          String       @map("document_number")
+  reasonCode              String?      @map("reason_code")
+  performedBy             String       @map("performed_by")
+  approvedBy              String?      @map("approved_by")
+  reversedByLedgerId      BigInt?      @map("reversed_by_ledger_id")
+  idempotencyKeyId        String       @unique @map("idempotency_key_id")
+  createdAt               DateTime     @default(now()) @map("created_at")
+  sequenceNo              BigInt       @unique @map("sequence_no") // monotonic chain position, computed under a FOR UPDATE lock on the prior tail row
+  prevHash                String       @map("prev_hash") @db.Char(64)
+  rowHash                 String       @map("row_hash") @db.Char(64)
+
+  branch                Branch                 @relation(fields: [branchId], references: [id])
+  productVariant        ProductVariant         @relation(fields: [productVariantId], references: [id])
+  warehouseLocation     WarehouseLocation      @relation(fields: [warehouseLocationId], references: [id])
+  conversionRateVersion ConversionRateVersion? @relation(fields: [conversionRateVersionId], references: [id])
+  idempotencyKey        IdempotencyKey         @relation(fields: [idempotencyKeyId], references: [id])
+  reversedByLedger      StockLedger?           @relation("LedgerReversal", fields: [reversedByLedgerId], references: [id])
+  reversalOf            StockLedger[]          @relation("LedgerReversal")
+
+  @@index([branchId, productVariantId, warehouseLocationId])
+  @@map("stock_ledger")
+}
+
+// One row per business day — the terminal hash actually exported/emailed.
+// The chain itself is global (a single sequence across all branches), so
+// this table is not branch-scoped.
+model LedgerHashExport {
+  id             String   @id @default(uuid())
+  businessDate   DateTime @unique @map("business_date") @db.Date
+  lastSequenceNo BigInt   @map("last_sequence_no")
+  terminalHash   String   @map("terminal_hash") @db.Char(64)
+  exportedAt     DateTime @default(now()) @map("exported_at")
+  recipients     String // snapshot of who it was sent to, for audit purposes
+
+  @@map("ledger_hash_export")
+}
+
+// Derived cache, always updated inside the same transaction as the ledger
+// insert that changes it. Never authoritative — StockLedger is.
+model StockBalance {
+  id                  String   @id @default(uuid())
+  productVariantId    String   @map("product_variant_id")
+  warehouseLocationId String   @map("warehouse_location_id")
+  batchId             String   @default("") @map("batch_id")
+  quantityOnHand      Decimal  @default(0) @map("quantity_on_hand") @db.Decimal(18, 4)
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  productVariant    ProductVariant    @relation(fields: [productVariantId], references: [id])
+  warehouseLocation WarehouseLocation @relation(fields: [warehouseLocationId], references: [id])
+
+  @@unique([productVariantId, warehouseLocationId, batchId])
+  @@map("stock_balance")
+}
+
+// ── Period close ──────────────────────────────────────────────────────
+
+model Period {
+  id          String    @id @default(uuid())
+  branchId    String    @map("branch_id")
+  periodStart DateTime  @map("period_start") @db.Date
+  periodEnd   DateTime  @map("period_end") @db.Date
+  isLocked    Boolean   @default(false) @map("is_locked")
+  lockedAt    DateTime? @map("locked_at")
+  lockedBy    String?   @map("locked_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@unique([branchId, periodStart, periodEnd])
+  @@map("period")
+}
+
+// ── Approval routing (configurable, fails closed on no match) ───────────
+
+model ApprovalThreshold {
+  id                   String   @id @default(uuid())
+  branchId             String?  @map("branch_id") // null = global default row, overridden by a branch-specific row
+  transactionType      String   @map("transaction_type")
+  minValue             Decimal  @map("min_value") @db.Decimal(18, 2)
+  maxValue             Decimal? @map("max_value") @db.Decimal(18, 2) // null = unbounded upper end
+  requiredApproverRole RoleName @map("required_approver_role")
+  isPlaceholder        Boolean  @default(true) @map("is_placeholder") // true until the client confirms real peso thresholds — see client-decisions-needed.md
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  branch Branch? @relation(fields: [branchId], references: [id])
+
+  @@map("approval_threshold")
+}
+
+// ── Document numbering & booklet control ─────────────────────────────────
+
+enum BookletStatus {
+  ACTIVE
+  EXHAUSTED
+  RETIRED
+}
+
+model DocumentBookletRegistry {
+  id           String        @id @default(uuid())
+  branchId     String        @map("branch_id")
+  documentType String        @map("document_type")
+  rangeStart   Int           @map("range_start")
+  rangeEnd     Int           @map("range_end")
+  registeredBy String        @map("registered_by") // Owner or Auditor only — enforced at the application layer
+  registeredAt DateTime      @default(now()) @map("registered_at")
+  status       BookletStatus @default(ACTIVE)
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@map("document_booklet_registry")
+}
+
+model DocumentSequence {
+  id           String @id @default(uuid())
+  branchId     String @map("branch_id")
+  documentType String @map("document_type")
+  year         Int
+  currentValue Int    @default(0) @map("current_value")
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@unique([branchId, documentType, year])
+  @@map("document_sequence")
+}
+
+// Every issued number. The unique constraint below is the hard DB-level
+// guarantee (G-34) — the application-layer check is belt-and-suspenders on
+// top of this, never the only line of defense.
+model DocumentNumber {
+  id           String   @id @default(uuid())
+  branchId     String   @map("branch_id")
+  documentType String   @map("document_type")
+  year         Int
+  sequenceNo   Int      @map("sequence_no")
+  fullNumber   String   @unique @map("full_number") // e.g. "RR-ILO-2026-000231"
+  referenceId  String?  @map("reference_id")
+  issuedAt     DateTime @default(now()) @map("issued_at")
+
+  branch            Branch             @relation(fields: [branchId], references: [id])
+  receivingReport   ReceivingReport?
+  retailSale        RetailSale?
+  adjustmentRequest AdjustmentRequest?
+  salesOrderRelease SalesOrderRelease?
+
+  @@unique([branchId, documentType, year, sequenceNo])
+  @@map("document_number")
+}
+
+// ── Idempotency ───────────────────────────────────────────────────────
+
+enum IdempotencyStatus {
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+model IdempotencyKey {
+  id                 String            @id @default(uuid())
+  documentType       String            @map("document_type")
+  documentNumber     String            @map("document_number")
+  branchCode         String            @map("branch_code")
+  status             IdempotencyStatus @default(IN_PROGRESS)
+  requestPayloadHash String            @map("request_payload_hash") // detects same-key-different-payload: a real duplicate, not a legitimate retry
+  resultRef          String?           @map("result_ref")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  completedAt        DateTime?         @map("completed_at")
+
+  stockLedger StockLedger?
+
+  @@unique([documentType, documentNumber, branchCode])
+  @@map("idempotency_key")
+}
+
+// ── Receiving workflow ───────────────────────────────────────────────────
+
+enum GateDirection {
+  IN
+  OUT
+}
+
+model GateLogEntry {
+  id            String        @id @default(uuid())
+  branchId      String        @map("branch_id")
+  direction     GateDirection
+  referenceType String?       @map("reference_type")
+  referenceId   String?       @map("reference_id")
+  vehiclePlate  String?       @map("vehicle_plate")
+  driverName    String?       @map("driver_name")
+  loggedBy      String        @map("logged_by")
+  loggedAt      DateTime      @default(now()) @map("logged_at")
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@map("gate_log_entry")
+}
+
+enum ReceivingReportStatus {
+  DRAFT
+  PENDING_INSPECTION
+  QUARANTINE
+  PENDING_VERIFICATION
+  PENDING_APPROVAL
+  APPROVED
+  PENDING_ENCODING
+  POSTED
+  VOID
+}
+
+model ReceivingReport {
+  id                          String                @id @default(uuid())
+  branchId                    String                @map("branch_id")
+  supplierId                  String                @map("supplier_id")
+  drNumber                    String                @map("dr_number")
+  poReference                 String?               @map("po_reference")
+  status                      ReceivingReportStatus @default(DRAFT)
+  gateLogEntryId              String?               @map("gate_log_entry_id")
+  receivedBy                  String                @map("received_by")
+  verifiedBy                  String?               @map("verified_by") // Step 8 checks this ≠ receivedBy
+  approvedBy                  String?               @map("approved_by")
+  encodedBy                   String?               @map("encoded_by")
+  documentNumberId            String?               @unique @map("document_number_id")
+  supplierCallbackConfirmedAt DateTime?             @map("supplier_callback_confirmed_at") // required before Step 9 approval when no PO / above threshold (G-04)
+  createdAt                   DateTime              @default(now()) @map("created_at")
+  updatedAt                   DateTime              @updatedAt @map("updated_at")
+
+  branch         Branch                @relation(fields: [branchId], references: [id])
+  supplier       Supplier              @relation(fields: [supplierId], references: [id])
+  documentNumber DocumentNumber?       @relation(fields: [documentNumberId], references: [id])
+  lines          ReceivingReportLine[]
+  // CountSlip no longer has a real FK relation to this table as of Phase 2
+  // (see CountSlip's own comment) — query it via
+  // prisma.countSlip.findMany({ where: { referenceType: "ReceivingReport", referenceId } })
+  // instead of an include.
+
+  @@map("receiving_report")
+}
+
+model ReceivingReportLine {
+  id                String   @id @default(uuid())
+  receivingReportId String   @map("receiving_report_id")
+  productVariantId  String   @map("product_variant_id")
+  expectedQty       Decimal? @map("expected_qty") @db.Decimal(18, 4)
+  finalQty          Decimal? @map("final_qty") @db.Decimal(18, 4) // resolved qty after both counts (+ tie-break if triggered)
+  unitCost          Decimal  @map("unit_cost") @db.Decimal(18, 4)
+  lineStatus        String   @default("OK") @map("line_status") // OK | DISCREPANCY | QUARANTINED
+
+  receivingReport ReceivingReport @relation(fields: [receivingReportId], references: [id])
+  productVariant  ProductVariant  @relation(fields: [productVariantId], references: [id])
+
+  @@map("receiving_report_line")
+}
+
+enum CountSlipRole {
+  RECEIVER
+  CHECKER
+  TIEBREAK
+  WHOLESALE_CHECK // Phase 2 — Wholesale's blind checker recount, against the order not the picker's figure
+  ADJUSTMENT_RECOUNT // Phase 2 — Adjustment workflow's independent recount
+  SPOT_RECOUNT // Phase 2 — Wholesale release's random independent spot-recount (G-10)
+}
+
+// Deliberately standalone, not embedded in the parent document — merging
+// both counts onto one record would make it trivial to enter both from one
+// screen, defeating the blind-count control (BR-025). Generic
+// referenceType/referenceId (Phase 2) rather than a hard FK to
+// ReceivingReport, since Wholesale's blind checker recount and Adjustment's
+// blind recount need the exact same mechanism — see Phase 2 plan sec.2.
+// No FK constraint on (referenceType, referenceId), matching every other
+// polymorphic table in this schema (GateLogEntry, TransactionEvidence,
+// DiscrepancyCase) — a bad referenceId fails silently rather than at insert,
+// same accepted tradeoff as those.
+model CountSlip {
+  id            String        @id @default(uuid())
+  referenceType String        @map("reference_type") // e.g. "ReceivingReport", "SalesOrder", "AdjustmentRequest"
+  referenceId   String        @map("reference_id")
+  role          CountSlipRole
+  countedBy     String        @map("counted_by")
+  witnessedBy   String?       @map("witnessed_by") // required for TIEBREAK slips
+  countedAt     DateTime      @default(now()) @map("counted_at")
+
+  lines CountSlipLine[]
+
+  // Hard DB-level guarantee that only one slip per role can exist for a
+  // given reference — closes a latent Phase 1 gap where "exactly one count
+  // per role" was only an application-layer check (two concurrent
+  // double-clicks could both pass it and both insert).
+  @@unique([referenceType, referenceId, role])
+  @@index([referenceType, referenceId])
+  @@map("count_slip")
+}
+
+model CountSlipLine {
+  id               String  @id @default(uuid())
+  countSlipId      String  @map("count_slip_id")
+  productVariantId String  @map("product_variant_id")
+  countedQty       Decimal @map("counted_qty") @db.Decimal(18, 4)
+
+  countSlip      CountSlip      @relation(fields: [countSlipId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+
+  @@map("count_slip_line")
+}
+
+enum CaptureMethod {
+  LIVE_CAMERA_STREAM // captured via in-page getUserMedia() canvas — no OS file picker ever shown
+  OTHER
+}
+
+model TransactionEvidence {
+  id            String        @id @default(uuid())
+  referenceType String        @map("reference_type")
+  referenceId   String        @map("reference_id")
+  storageKey    String        @map("storage_key")
+  captureMethod CaptureMethod @map("capture_method")
+  capturedBy    String        @map("captured_by")
+  capturedAt    DateTime      @default(now()) @map("captured_at")
+
+  @@map("transaction_evidence")
+}
+
+// ── Phase 2 — Retail sale ─────────────────────────────────────────────────
+
+enum RetailSaleStatus {
+  DRAFT
+  POSTED
+  VOID
+}
+
+// Two states plus VOID is enough — business-process-design.md sec.8.1 steps
+// 4-6 (invoice issued -> handed over -> stock posted) have no approval gate
+// between them, unlike Wholesale's multi-day sequence, so "handed over"
+// never needs to be its own committed DB state. Voiding is only possible
+// pre-post (status != POSTED) — voiding after handover is explicitly out of
+// Phase 2 scope (G-12 routes it through Customer Returns, which is Phase 3).
+model RetailSale {
+  id               String           @id @default(uuid())
+  branchId         String           @map("branch_id")
+  cashierId        String           @map("cashier_id")
+  status           RetailSaleStatus @default(DRAFT)
+  documentNumberId String?          @unique @map("document_number_id")
+  gateLogEntryId   String?          @map("gate_log_entry_id") // optional bulk-carryout gate check, above a configurable threshold
+  voidReason       String?          @map("void_reason")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  branch         Branch           @relation(fields: [branchId], references: [id])
+  documentNumber DocumentNumber?  @relation(fields: [documentNumberId], references: [id])
+  lines          RetailSaleLine[]
+
+  @@map("retail_sale")
+}
+
+model RetailSaleLine {
+  id               String  @id @default(uuid())
+  retailSaleId     String  @map("retail_sale_id")
+  productVariantId String  @map("product_variant_id")
+  quantity         Decimal @db.Decimal(18, 4)
+  unitPrice        Decimal @map("unit_price") @db.Decimal(12, 2) // = ProductVariant.sellingPrice at time of sale — list price only, no discount in Phase 2
+
+  retailSale     RetailSale     @relation(fields: [retailSaleId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+
+  @@map("retail_sale_line")
+}
+
+// ── Phase 2 — Adjustments (the most heavily controlled transaction: the
+// only one that can create or destroy stock on internal say-so) ───────────
+
+enum AdjustmentReasonCode {
+  ADJ_01 // Physical count variance — shortage (Negative)
+  ADJ_02 // Physical count variance — overage (Positive)
+  ADJ_03 // Damage found in storage (Negative)
+  ADJ_04 // Encoding error correction (Either)
+  ADJ_05 // Wrong variation / conversion posted (Either)
+  ADJ_06 // Found stock previously written off (Positive)
+  ADJ_07 // Sample / promotional / own use (Negative)
+  ADJ_08 // Expiry / degradation (sun-aged, brittle) (Negative)
+  ADJ_09 // Repacking loss / conversion remainder (Negative)
+  ADJ_10 // Theft / confirmed loss (Negative) — always requires Owner approval regardless of value (A-5)
+  // ADJ-11 (Opening Balance) is deliberately NOT here — it's Phase 1's own
+  // separate, once-per-product-ever mechanism (postOpeningBalance.ts), not
+  // an ordinary adjustment (business-process-design.md sec.10.2).
+}
+
+enum AdjustmentStatus {
+  DRAFT
+  PENDING_INVESTIGATION
+  PENDING_APPROVAL
+  APPROVED
+  PENDING_POSTING // atomic-claim intermediate, mirrors ReceivingReport's PENDING_ENCODING — prevents a double-post race
+  POSTED
+  REJECTED // investigation found "resolved without adjustment," or an approver declined
+  VOID
+}
+
+// The most dangerous transaction in the system (business-process-design.md
+// sec.10) — the only one that can create or destroy stock on internal
+// say-so, hence the heaviest controls: requester != investigator != approver
+// (A-2), a fixed reason-code list (A-3), and G-21's rolling-7-day
+// cumulative approval routing (see AdjustmentVelocityLock below).
+model AdjustmentRequest {
+  id                  String               @id @default(uuid())
+  branchId            String               @map("branch_id")
+  productVariantId    String               @map("product_variant_id")
+  warehouseLocationId String               @map("warehouse_location_id")
+  reasonCode          AdjustmentReasonCode @map("reason_code")
+  quantityDelta       Decimal              @map("quantity_delta") @db.Decimal(18, 4) // signed — direction is implied by reasonCode for fixed-direction codes, validated at request time
+  unitCostAtRequest   Decimal              @map("unit_cost_at_request") @db.Decimal(18, 4) // frozen at submission — never live-recomputed (same reasoning as ReceivingReportLine.unitCost)
+  value               Decimal              @db.Decimal(18, 4) // = |quantityDelta| * unitCostAtRequest, frozen — G-21's rolling sum is over this, not a live recomputation
+  reconciliationNotes String               @map("reconciliation_notes") // A-1: search-and-reconcile must be documented before an adjustment can even be requested
+  status              AdjustmentStatus     @default(DRAFT)
+  requestedBy         String               @map("requested_by")
+  investigatedBy      String?              @map("investigated_by")
+  investigationNotes  String?              @map("investigation_notes")
+  approvedBy          String?              @map("approved_by")
+  // The role tier this was approved under — lets a later submission's G-21
+  // rolling-total recompute detect that an already-granted approval is now
+  // insufficient (the rolling total only ever grows from a new submission,
+  // so a plain inequality against the newly-required tier is enough to
+  // detect "insufficient," no role-ranking table needed).
+  approvalTier        RoleName?            @map("approval_tier")
+  postedBy            String?              @map("posted_by")
+  documentNumberId    String?              @unique @map("document_number_id")
+  voidReason          String?              @map("void_reason")
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+
+  branch            Branch            @relation(fields: [branchId], references: [id])
+  productVariant    ProductVariant    @relation(fields: [productVariantId], references: [id])
+  warehouseLocation WarehouseLocation @relation(fields: [warehouseLocationId], references: [id])
+  documentNumber    DocumentNumber?   @relation(fields: [documentNumberId], references: [id])
+
+  @@map("adjustment_request")
+}
+
+// Lazily-upserted-then-FOR-UPDATE mutex row, one per requester — the fix
+// for a real concurrency gap: two adjustment submissions by the SAME
+// requester within the same second could each read a stale rolling-7-day
+// total and both land in a lower approval tier than their true combined
+// total requires. Scoped per-requester (not global) so unrelated
+// requesters' submissions never serialize against each other. Same pattern
+// as document_sequence's lock-row (documentNumber.ts).
+model AdjustmentVelocityLock {
+  requesterId String @id @map("requester_id")
+
+  @@map("adjustment_velocity_lock")
+}
+
+enum DiscrepancyCaseStatus {
+  OPEN
+  CLOSED
+}
+
+// Minimal placeholder only — no investigation workflow (that's Phase 3
+// scope). Exists so G-05's Owner-approval fallback and BR-093's
+// evidence-mismatch path have somewhere to write a record instead of nothing.
+model DiscrepancyCase {
+  id            String                @id @default(uuid())
+  referenceType String                @map("reference_type")
+  referenceId   String                @map("reference_id")
+  openedBy      String                @map("opened_by")
+  openedAt      DateTime              @default(now()) @map("opened_at")
+  status        DiscrepancyCaseStatus @default(OPEN)
+  notes         String?
+  closedBy      String?               @map("closed_by")
+  closedAt      DateTime?             @map("closed_at")
+
+  @@map("discrepancy_case")
+}
+
+// ── Generic audit log (non-stock actions) ────────────────────────────────
+// The ledger itself is the audit trail for stock movements; this covers
+// everything else (master-data edits, permission changes, elevation grants).
+
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  actorId     String   @map("actor_id")
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id")
+  beforeState Json?    @map("before_state")
+  afterState  Json?    @map("after_state")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("audit_log")
+}
+
+// ── Phase 2 — Wholesale release ──────────────────────────────────────────
+// Orders/CRM/AR are explicitly future, separate modules (business-process-
+// design.md sec.1.4) — Customer/SalesOrder here are the minimal internal
+// stand-ins Inventory needs to drive its own controls, not a real Orders
+// system. See Phase 2 plan sec.3/sec.6 for the full design.
+
+model Customer {
+  id           String   @id @default(uuid())
+  name         String
+  contactPhone String?  @map("contact_phone")
+  creditLimit  Decimal? @map("credit_limit") @db.Decimal(14, 2) // unused placeholder until a real AR module exists
+  status       String   @default("ACTIVE")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  salesOrders SalesOrder[]
+
+  @@map("customer")
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  RESERVED
+  PICKING
+  STAGED
+  CHECKED
+  PENDING_RELEASE_APPROVAL
+  RELEASED_PARTIAL
+  RELEASED
+  VOID
+}
+
+// The picker's count goes directly on SalesOrderLine.pickedQty (visible —
+// business-process-design.md sec.8.2 models one shared physical Picking
+// List, not an independently-blind slip). Only the Checker's recount is
+// blind, via the generalized CountSlip (role WHOLESALE_CHECK), checked
+// against the order's own ordered quantities — never against pickedQty.
+// pickedBy/checkedBy/authorizedBy are stored directly here (not only
+// inferred via CountSlip) so the spot-recount eligibility query (day+branch
+// scoped SoD check) doesn't need a join across every activity table.
+model SalesOrder {
+  id                    String           @id @default(uuid())
+  branchId              String           @map("branch_id")
+  customerId            String           @map("customer_id")
+  salesRepId            String           @map("sales_rep_id")
+  status                SalesOrderStatus @default(DRAFT)
+  requestedDeliveryDate DateTime?        @map("requested_delivery_date") @db.Date
+  confirmedBy           String?          @map("confirmed_by")
+  pickedBy              String?          @map("picked_by")
+  pickedAt              DateTime?        @map("picked_at")
+  checkedBy             String?          @map("checked_by")
+  checkedAt             DateTime?        @map("checked_at")
+  // G-10 flat-rate random spot-recount: rolled exactly once (rolledAt gates
+  // re-rolling), independent of picking/checking/authorization for this
+  // order at this branch on the current business date.
+  spotRecountRequired   Boolean          @default(false) @map("spot_recount_required")
+  spotRecountRolledAt   DateTime?        @map("spot_recount_rolled_at")
+  authorizedBy          String?          @map("authorized_by")
+  authorizedAt          DateTime?        @map("authorized_at")
+  voidReason            String?          @map("void_reason")
+  createdAt             DateTime         @default(now()) @map("created_at")
+  updatedAt             DateTime         @updatedAt @map("updated_at")
+
+  branch   Branch              @relation(fields: [branchId], references: [id])
+  customer Customer            @relation(fields: [customerId], references: [id])
+  lines    SalesOrderLine[]
+  releases SalesOrderRelease[]
+
+  @@map("sales_order")
+}
+
+// Single canonical RELEASE-zone location for all wholesale fulfillment,
+// exactly mirroring how encodeReceivingReport already uses one canonical
+// RECEIVING-zone location — no per-bin pick-location tracking in Phase 2.
+model SalesOrderLine {
+  id               String   @id @default(uuid())
+  salesOrderId     String   @map("sales_order_id")
+  productVariantId String   @map("product_variant_id")
+  orderedQty       Decimal  @map("ordered_qty") @db.Decimal(18, 4)
+  pickedQty        Decimal? @map("picked_qty") @db.Decimal(18, 4)
+  checkedQty       Decimal? @map("checked_qty") @db.Decimal(18, 4)
+  releasedQty      Decimal  @default(0) @map("released_qty") @db.Decimal(18, 4) // running total across all releases for this line
+  unitPrice        Decimal  @map("unit_price") @db.Decimal(12, 2)
+
+  salesOrder     SalesOrder              @relation(fields: [salesOrderId], references: [id])
+  productVariant ProductVariant          @relation(fields: [productVariantId], references: [id])
+  releaseLines   SalesOrderReleaseLine[]
+
+  @@map("sales_order_line")
+}
+
+enum StockReservationStatus {
+  ACTIVE
+  CONSUMED
+  EXPIRED
+  CANCELLED
+}
+
+// Tracked at (productVariantId, branchId), NOT a specific location — which
+// bin fulfills it isn't decided until picking. Generic referenceType/
+// referenceId (matches CountSlip/GateLogEntry/DiscrepancyCase's pattern)
+// rather than a hard FK, since a future reservation-consuming workflow
+// shouldn't require a schema change here.
+model StockReservation {
+  id               String                 @id @default(uuid())
+  branchId         String                 @map("branch_id")
+  productVariantId String                 @map("product_variant_id")
+  referenceType    String                 @map("reference_type") // "SalesOrder"
+  referenceId      String                 @map("reference_id")
+  qty              Decimal                @db.Decimal(18, 4)
+  status           StockReservationStatus @default(ACTIVE)
+  createdAt        DateTime               @default(now()) @map("created_at")
+  expiresAt        DateTime               @map("expires_at") // default now()+3 days per client-decisions-needed.md #3's recommended default
+
+  branch         Branch         @relation(fields: [branchId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+
+  @@index([branchId, productVariantId, status])
+  @@index([referenceType, referenceId])
+  @@map("stock_reservation")
+}
+
+// Lazily-upserted-then-FOR-UPDATE mutex row, one per (variant, branch) — the
+// fix for a real write-skew bug: locking stock_balance rows does nothing to
+// prevent two concurrent order-confirmations from both reading the same
+// (correct, stale-free) ATP and both inserting a reservation, since there's
+// no existing row for two competing INSERTs to contend on. Every
+// reservation-creating transaction must lock this row before computing ATP
+// and inserting. Same pattern as document_sequence/adjustment_velocity_lock.
+model StockReservationLock {
+  productVariantId String @map("product_variant_id")
+  branchId         String @map("branch_id")
+
+  @@id([productVariantId, branchId])
+  @@map("stock_reservation_lock")
+}
+
+enum SalesOrderReleaseStatus {
+  PENDING_GATE_CHECK
+  RELEASED
+  POSTED
+  VOID
+}
+
+// Supports partial delivery (architecture.md sec.7.2) without needing
+// per-location tracking, since fulfillment location is already fixed to the
+// RELEASE zone. Gate-check fields (weightCheckPassed/sealVerifiedIntact) are
+// a hard posting precondition, not just storage — mirrors
+// encodeReceivingReport's existing pattern of hard-blocking on missing
+// evidence before posting. podReturnedAt (24h internal SLA) and
+// customerConfirmedAt (48h dispute window) are two genuinely separate
+// clocks (business-process-design.md sec.8.2 step 11).
+model SalesOrderRelease {
+  id                  String                   @id @default(uuid())
+  salesOrderId        String                   @map("sales_order_id")
+  sealNumber          String?                  @map("seal_number")
+  expectedWeightMinKg Decimal?                 @map("expected_weight_min_kg") @db.Decimal(10, 3)
+  expectedWeightMaxKg Decimal?                 @map("expected_weight_max_kg") @db.Decimal(10, 3)
+  actualWeightKg      Decimal?                 @map("actual_weight_kg") @db.Decimal(10, 3)
+  weightCheckPassed   Boolean?                 @map("weight_check_passed")
+  sealVerifiedIntact  Boolean?                 @map("seal_verified_intact")
+  gateLogEntryOutId   String?                  @map("gate_log_entry_out_id")
+  documentNumberId    String?                  @unique @map("document_number_id")
+  releasedBy          String?                  @map("released_by")
+  podReturnedAt       DateTime?                @map("pod_returned_at") // internal 24h POD-return SLA
+  customerConfirmedAt DateTime?                @map("customer_confirmed_at") // 48h customer dispute window default (client-decisions-needed.md #4)
+  status              SalesOrderReleaseStatus  @default(PENDING_GATE_CHECK)
+  voidReason          String?                  @map("void_reason")
+  createdAt           DateTime                 @default(now()) @map("created_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
+
+  salesOrder     SalesOrder              @relation(fields: [salesOrderId], references: [id])
+  documentNumber DocumentNumber?         @relation(fields: [documentNumberId], references: [id])
+  lines          SalesOrderReleaseLine[]
+
+  @@map("sales_order_release")
+}
+
+model SalesOrderReleaseLine {
+  id                  String  @id @default(uuid())
+  salesOrderReleaseId String  @map("sales_order_release_id")
+  salesOrderLineId    String  @map("sales_order_line_id")
+  qty                 Decimal @db.Decimal(18, 4)
+
+  salesOrderRelease SalesOrderRelease @relation(fields: [salesOrderReleaseId], references: [id])
+  salesOrderLine    SalesOrderLine    @relation(fields: [salesOrderLineId], references: [id])
+
+  @@map("sales_order_release_line")
+}

@@ -1,0 +1,16 @@
+-- Root-cause fix for a real timestamp bug found in dev: this Postgres
+-- server's default session TimeZone was America/New_York (host-machine
+-- default), not UTC. Every `timestamp without time zone` column here
+-- stores Prisma's UTC wall-clock when the app supplies the value
+-- explicitly (Prisma's typed client is UTC-consistent regardless of
+-- session TimeZone), but a DB-level `DEFAULT CURRENT_TIMESTAMP` (from
+-- Prisma's @default(now())) is evaluated server-side using the session
+-- TimeZone GUC — so any row that fell back to the DB default was stamped
+-- with a wall-clock time silently offset by several hours, mislabeled as
+-- if it were UTC. Same risk for any future raw SQL that calls now().
+--
+-- Fixed at the role level (CURRENT_USER, not a literal role/database name)
+-- so this migration is portable across every environment — local dev,
+-- staging, and whatever production host this ends up on — without
+-- depending on a specific database or role name existing there.
+ALTER ROLE CURRENT_USER SET timezone TO 'UTC';
