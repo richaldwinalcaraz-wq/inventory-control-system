@@ -6,8 +6,10 @@ import { validatePostingDate } from "../../domain/period/validatePostingDate";
 import { issueDocumentNumber } from "../../domain/documents/documentNumber";
 import { postLedgerEntryInTx } from "../../domain/ledger/postLedgerEntry";
 import { AdjustmentRequestNotFoundError, InvalidAdjustmentStateError } from "./request";
+import { computePostedDisposalQty } from "../../domain/disposal/disposalLock";
 
 export class NotReadyForAdjustmentPostingError extends Error {}
+export class DamageReportNotYetDisposedError extends Error {}
 
 export interface PostAdjustmentParams {
   actorUserId: string;
@@ -38,6 +40,32 @@ export async function postAdjustment(prisma: PrismaClient, params: PostAdjustmen
 
   await assertPermission(prisma, { role: params.actorRole, action: "adjustment.post.create" });
 
+  // ADJ_03 retirement: never posts a second stock movement for the same
+  // physical event — the linked DamageReport's own DisposalCertificate
+  // already moved the stock via DAMAGE_OUT. Re-checked here (not just
+  // trusted from request time) because request time only requires the
+  // link to exist, not that disposal has actually finished yet.
+  //
+  // Deliberately checks POSTED certificate quantity directly (same shared
+  // computePostedDisposalQty finalize.ts uses) rather than trusting
+  // DamageReport.status === DISPOSED alone — see that file's comment for
+  // why status can't be trusted here.
+  if (req.reasonCode === "ADJ_03") {
+    if (!req.damageReportId) {
+      throw new DamageReportNotYetDisposedError("ADJ_03 requires a linked DamageReport — this request has none.");
+    }
+    const report = await prisma.damageReport.findUnique({ where: { id: req.damageReportId } });
+    if (!report) {
+      throw new DamageReportNotYetDisposedError(`ADJ_03's linked DamageReport ${req.damageReportId} was not found.`);
+    }
+    const postedQty = await computePostedDisposalQty(prisma, { damageReportId: report.id });
+    if (postedQty < Number(report.quantity)) {
+      throw new DamageReportNotYetDisposedError(
+        `Cannot post ADJ_03 — its linked DamageReport must have POSTED DisposalCertificate(s) covering its full quantity first (posted ${postedQty}/${report.quantity.toString()}).`,
+      );
+    }
+  }
+
   const postingDate = params.postingDate ?? new Date();
   await validatePostingDate(prisma, { branchId: req.branchId, postingDate, supervisorApproval: params.supervisorApproval }); // A-6
 
@@ -61,33 +89,40 @@ export async function postAdjustment(prisma: PrismaClient, params: PostAdjustmen
       referenceId: req.id,
     });
 
-    const requestPayload = { adjustmentRequestId: req.id, quantityDelta: req.quantityDelta.toString() };
-    const ledgerResult = await postLedgerEntryInTx(tx, {
-      idempotency: {
-        documentType: "ADJ",
+    // ADJ_03: administrative closure only — the DamageReport's
+    // DisposalCertificate already posted the real DAMAGE_OUT movement, so
+    // no second postLedgerEntryInTx call happens here.
+    let ledger = null;
+    if (req.reasonCode !== "ADJ_03") {
+      const requestPayload = { adjustmentRequestId: req.id, quantityDelta: req.quantityDelta.toString() };
+      const ledgerResult = await postLedgerEntryInTx(tx, {
+        idempotency: {
+          documentType: "ADJ",
+          documentNumber: docNumber.fullNumber,
+          branchCode: params.branchCode,
+          requestPayloadHash: createHash("sha256").update(JSON.stringify(requestPayload)).digest("hex"),
+        },
+        branchId: req.branchId,
+        productVariantId: req.productVariantId,
+        warehouseLocationId: req.warehouseLocationId,
+        quantityDeltaBase: req.quantityDelta.toString(),
+        movementType: Number(req.quantityDelta) >= 0 ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
+        unitCostAtMovement: req.unitCostAtRequest.toString(),
+        referenceType: "AdjustmentRequest",
+        referenceId: req.id,
         documentNumber: docNumber.fullNumber,
-        branchCode: params.branchCode,
-        requestPayloadHash: createHash("sha256").update(JSON.stringify(requestPayload)).digest("hex"),
-      },
-      branchId: req.branchId,
-      productVariantId: req.productVariantId,
-      warehouseLocationId: req.warehouseLocationId,
-      quantityDeltaBase: req.quantityDelta.toString(),
-      movementType: Number(req.quantityDelta) >= 0 ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
-      unitCostAtMovement: req.unitCostAtRequest.toString(),
-      referenceType: "AdjustmentRequest",
-      referenceId: req.id,
-      documentNumber: docNumber.fullNumber,
-      reasonCode: req.reasonCode,
-      performedBy: params.actorUserId,
-      approvedBy: req.approvedBy ?? undefined,
-    });
+        reasonCode: req.reasonCode,
+        performedBy: params.actorUserId,
+        approvedBy: req.approvedBy ?? undefined,
+      });
+      ledger = ledgerResult.ledger;
+    }
 
     const posted = await tx.adjustmentRequest.update({
       where: { id: req.id },
       data: { status: "POSTED", documentNumberId: docNumber.id },
     });
 
-    return { adjustmentRequest: posted, documentNumber: docNumber.fullNumber, ledger: ledgerResult.ledger };
+    return { adjustmentRequest: posted, documentNumber: docNumber.fullNumber, ledger };
   });
 }

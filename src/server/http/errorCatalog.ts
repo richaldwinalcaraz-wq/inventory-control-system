@@ -36,16 +36,18 @@ import { NotReadyForEncodingError, MissingFinalQuantitiesError, LivePhotoRequire
 import { CannotVoidPostedReportError, MatchingGateExitOrOwnerRequiredError } from "../application/receiving/void";
 import { RetailSaleNotFoundError, InvalidRetailSaleStateError, EmptyRetailSaleError } from "../application/retail/draft";
 import { CannotVoidPostedRetailSaleError } from "../application/retail/void";
+import { VoidWithoutReturnReasonRequiredError } from "../application/retail/voidWithoutReturn";
 import { WarehouseLocationNotFoundError } from "../application/inventory/transfer";
 import {
   AdjustmentRequestNotFoundError,
   InvalidAdjustmentStateError,
   ReconciliationNotesRequiredError,
   WrongAdjustmentDirectionError,
+  DamageReportRequiredForAdj03Error,
 } from "../application/adjustment/request";
 import { InvestigatorCannotBeRequesterError, AuditorReviewRequiredError } from "../application/adjustment/investigate";
 import { RequesterCannotApproveOwnAdjustmentError, WrongAdjustmentApproverRoleError } from "../application/adjustment/approve";
-import { NotReadyForAdjustmentPostingError } from "../application/adjustment/post";
+import { NotReadyForAdjustmentPostingError, DamageReportNotYetDisposedError } from "../application/adjustment/post";
 import { CannotVoidPostedAdjustmentError } from "../application/adjustment/void";
 import { InsufficientAvailableToPromiseError } from "../domain/wholesale/reservation";
 import { NoEligibleSpotRecountWitnessError } from "../domain/wholesale/spotRecount";
@@ -58,6 +60,61 @@ import { MissingUnitWeightError, ExceedsAvailableToReleaseError, EmptyReleaseErr
 import { SalesOrderReleaseNotFoundError, InvalidReleaseStateError } from "../application/wholesale/gateCheck";
 import { GateCheckPreconditionsNotMetError, NotReadyForReleasePostingError } from "../application/wholesale/post";
 import { CannotVoidOrderWithReleasesError, CannotVoidPostedReleaseError } from "../application/wholesale/void";
+import { DiscrepancyCaseNotFoundError, InvalidDiscrepancyCaseStateError, AssigneeRequiredError } from "../application/discrepancy/assign";
+import { CaseNotAssignedError, ResolutionRequiredError } from "../application/discrepancy/close";
+import {
+  OriginalSaleLineNotFoundError,
+  OriginalSaleNotEligibleForReturnError,
+  InvalidReturnQuantityError,
+  ExceedsRemainingReturnableQtyError,
+  WrongReturnApproverRoleError,
+} from "../application/returns/authorize";
+import { ReturnAuthorizationNotFoundError, InvalidReturnAuthorizationStateError, ReturnAuthorizationExpiredError } from "../application/returns/receive";
+import { ReturnCountAlreadySubmittedError, ReturnReceiveCountMissingError, ReturnCheckerMustNotBeReceiverError } from "../application/returns/count";
+import {
+  GradingEvidenceRequiredError,
+  GraderCannotBeIssuerError,
+  GraderMustDifferFromFirstGraderError,
+  GradingAlreadySubmittedError,
+  BothReturnCountsRequiredError,
+  GradingIncompleteError,
+} from "../application/returns/grade";
+import { ReturnNotDisputedError } from "../application/returns/resolveDisagreement";
+import {
+  ReturnWarehouseLocationNotFoundError,
+  AlreadyPostedError,
+  NotReadyForReturnPostingError,
+  ReturnMissingDocumentNumberError,
+} from "../application/returns/post";
+import { CannotVoidReceivedReturnError } from "../application/returns/void";
+import { CauseRequiredError, InvalidDamageQuantityError } from "../application/disposal/report";
+import { DamageReportNotFoundError, InvalidDamageReportStateError } from "../application/disposal/investigate";
+import {
+  ExceedsUndisposedQtyError,
+  WitnessMustNotBeWarehouseRoleError,
+  SameWitnessError,
+  InvalidCertificateQuantityError,
+} from "../application/disposal/createCertificate";
+import {
+  DisposalCertificateNotFoundError,
+  InvalidDisposalCertificateStateError,
+  WrongDispositionError,
+  DestructionEvidenceRequiredError,
+  NotReadyForDisposalPostingError,
+} from "../application/disposal/destroy";
+import {
+  ScrapSaleAlreadyRecordedError,
+  ScrapSaleJustificationRequiredError,
+  ScrapBuyerBenchmarkNotFoundError,
+  ScrapSaleRecordNotFoundError,
+  ScrapSaleNotBelowBenchmarkError,
+  ScrapSaleAlreadyApprovedError,
+  WrongScrapSaleApproverRoleError,
+  ScrapSaleApprovalRequiredError,
+  QuoteEvidenceRequiredError,
+} from "../application/disposal/scrapSale";
+import { CannotVoidPostedDisposalCertificateError, VoidReasonRequiredError } from "../application/disposal/void";
+import { NoBranchManagerConfiguredError } from "../application/discrepancy/aging";
 import { UnauthenticatedError } from "./currentActor";
 import { InvalidRequestBodyError } from "./parseBody";
 
@@ -114,6 +171,8 @@ const CATALOG: Array<[new (...args: never[]) => Error, number, string]> = [
   [RequesterCannotApproveOwnAdjustmentError, 403, "SOD_VIOLATION"],
   [WrongAdjustmentApproverRoleError, 403, "WRONG_APPROVER_ROLE"],
   [NotReadyForAdjustmentPostingError, 409, "NOT_READY_FOR_POSTING"],
+  [DamageReportRequiredForAdj03Error, 422, "DAMAGE_REPORT_REQUIRED"],
+  [DamageReportNotYetDisposedError, 409, "DAMAGE_REPORT_NOT_YET_DISPOSED"],
   [CannotVoidPostedAdjustmentError, 409, "CANNOT_VOID_POSTED"],
   [SalesOrderNotFoundError, 404, "NOT_FOUND"],
   [InvalidSalesOrderStateError, 409, "INVALID_STATE"],
@@ -135,6 +194,60 @@ const CATALOG: Array<[new (...args: never[]) => Error, number, string]> = [
   [NotReadyForReleasePostingError, 409, "NOT_READY_FOR_POSTING"],
   [CannotVoidOrderWithReleasesError, 409, "CANNOT_VOID_WITH_RELEASES"],
   [CannotVoidPostedReleaseError, 409, "CANNOT_VOID_POSTED"],
+  [DiscrepancyCaseNotFoundError, 404, "NOT_FOUND"],
+  [InvalidDiscrepancyCaseStateError, 409, "INVALID_STATE"],
+  [AssigneeRequiredError, 422, "ASSIGNEE_REQUIRED"],
+  [CaseNotAssignedError, 422, "CASE_NOT_ASSIGNED"],
+  [ResolutionRequiredError, 422, "RESOLUTION_REQUIRED"],
+  [OriginalSaleLineNotFoundError, 404, "NOT_FOUND"],
+  [OriginalSaleNotEligibleForReturnError, 422, "NOT_ELIGIBLE_FOR_RETURN"],
+  [InvalidReturnQuantityError, 400, "INVALID_QUANTITY"],
+  [ExceedsRemainingReturnableQtyError, 409, "EXCEEDS_REMAINING_RETURNABLE_QTY"],
+  [WrongReturnApproverRoleError, 403, "WRONG_APPROVER_ROLE"],
+  [ReturnAuthorizationNotFoundError, 404, "NOT_FOUND"],
+  [InvalidReturnAuthorizationStateError, 409, "INVALID_STATE"],
+  [ReturnAuthorizationExpiredError, 409, "RETURN_AUTHORIZATION_EXPIRED"],
+  [ReturnCountAlreadySubmittedError, 409, "ALREADY_SUBMITTED"],
+  [ReturnReceiveCountMissingError, 422, "RECEIVE_COUNT_MISSING"],
+  [ReturnCheckerMustNotBeReceiverError, 403, "SOD_VIOLATION"],
+  [GradingEvidenceRequiredError, 422, "GRADING_EVIDENCE_REQUIRED"],
+  [GraderCannotBeIssuerError, 403, "SOD_VIOLATION"],
+  [GraderMustDifferFromFirstGraderError, 403, "SOD_VIOLATION"],
+  [GradingAlreadySubmittedError, 409, "ALREADY_SUBMITTED"],
+  [BothReturnCountsRequiredError, 422, "BOTH_COUNTS_REQUIRED"],
+  [GradingIncompleteError, 409, "GRADING_INCOMPLETE"],
+  [ReturnNotDisputedError, 409, "NOT_DISPUTED"],
+  [ReturnWarehouseLocationNotFoundError, 422, "WAREHOUSE_LOCATION_NOT_CONFIGURED"],
+  [AlreadyPostedError, 409, "ALREADY_POSTED"],
+  [NotReadyForReturnPostingError, 409, "NOT_READY_FOR_POSTING"],
+  [ReturnMissingDocumentNumberError, 500, "INTERNAL_ERROR"],
+  [CannotVoidReceivedReturnError, 409, "CANNOT_VOID_RECEIVED"],
+  [CauseRequiredError, 422, "CAUSE_REQUIRED"],
+  [InvalidDamageQuantityError, 400, "INVALID_QUANTITY"],
+  [DamageReportNotFoundError, 404, "NOT_FOUND"],
+  [InvalidDamageReportStateError, 409, "INVALID_STATE"],
+  [ExceedsUndisposedQtyError, 409, "EXCEEDS_UNDISPOSED_QTY"],
+  [WitnessMustNotBeWarehouseRoleError, 403, "WITNESS_MUST_NOT_BE_WAREHOUSE_ROLE"],
+  [SameWitnessError, 400, "SAME_WITNESS"],
+  [InvalidCertificateQuantityError, 400, "INVALID_QUANTITY"],
+  [DisposalCertificateNotFoundError, 404, "NOT_FOUND"],
+  [InvalidDisposalCertificateStateError, 409, "INVALID_STATE"],
+  [WrongDispositionError, 409, "WRONG_DISPOSITION"],
+  [DestructionEvidenceRequiredError, 422, "DESTRUCTION_EVIDENCE_REQUIRED"],
+  [NotReadyForDisposalPostingError, 409, "NOT_READY_FOR_POSTING"],
+  [ScrapSaleAlreadyRecordedError, 409, "ALREADY_RECORDED"],
+  [ScrapSaleJustificationRequiredError, 422, "SCRAP_SALE_JUSTIFICATION_REQUIRED"],
+  [ScrapBuyerBenchmarkNotFoundError, 404, "NOT_FOUND"],
+  [ScrapSaleRecordNotFoundError, 404, "NOT_FOUND"],
+  [ScrapSaleNotBelowBenchmarkError, 400, "NOT_BELOW_BENCHMARK"],
+  [ScrapSaleAlreadyApprovedError, 409, "ALREADY_APPROVED"],
+  [WrongScrapSaleApproverRoleError, 403, "WRONG_APPROVER_ROLE"],
+  [ScrapSaleApprovalRequiredError, 422, "SCRAP_SALE_APPROVAL_REQUIRED"],
+  [QuoteEvidenceRequiredError, 422, "QUOTE_EVIDENCE_REQUIRED"],
+  [CannotVoidPostedDisposalCertificateError, 409, "CANNOT_VOID_POSTED"],
+  [VoidReasonRequiredError, 422, "VOID_REASON_REQUIRED"],
+  [NoBranchManagerConfiguredError, 422, "NO_BRANCH_MANAGER_CONFIGURED"],
+  [VoidWithoutReturnReasonRequiredError, 422, "VOID_WITHOUT_RETURN_REASON_REQUIRED"],
 ];
 
 /** Falls back to 500/INTERNAL_ERROR for anything not in the catalog — never silently 200s an error. */

@@ -5,6 +5,143 @@ versioned, PDF-exported). This file is for future-Claude / future-you:
 session-to-session decisions, gotchas, and open threads that aren't obvious
 from reading the docs cold. Updated as a close-out step.
 
+## 2026-08-19 — two gaps closed from the 2026-08-18 close-out, before Phase 4
+
+Both real gaps flagged in the 2026-08-18 close-out (below) were fixed at the
+start of this session, verified against the real dev DB, and committed:
+
+- **G-09 blind spot, fixed at the source.** Added `computePostedDisposalQty`
+  (`src/server/domain/disposal/disposalLock.ts`) — sums only POSTED
+  certificate quantity, deliberately separate from
+  `computeRemainingUndisposedQty` (which correctly counts DRAFT/FOR_DISPOSAL
+  too, for its own over-allocation-blocking job). `finalize.ts`'s
+  `markDamageReportDisposedIfComplete` now uses the POSTED-only sum to decide
+  when a report is really done, so a report split across one POSTED and one
+  abandoned-DRAFT certificate no longer prematurely reads `DISPOSED`.
+  `adjustment/post.ts`'s ADJ_03 gate was simplified to call the same shared
+  helper instead of its own duplicate inline query.
+  **A second, related bug surfaced while verifying this fix**:
+  `checkQuarantineDisposalAging`'s query additionally filtered out any
+  `DamageReport` with *any* non-VOID certificate at all
+  (`disposalCertificates: { none: ... } }`), which — independent of the
+  status-flip bug — silently hid exactly the partial-DRAFT-certificate case
+  the check exists to catch. Removed; the query now relies solely on
+  `status`, which is trustworthy again after the fix above. Verified with a
+  focused script: a report split one-POSTED/one-DRAFT stays open and is
+  correctly surfaced by the aging check.
+- **SCRAP_SALE quotes-on-file loophole closed** (user's explicit call,
+  tightening beyond the original Phase 3 plan's as-designed behavior):
+  `recordScrapSaleQuote` now requires at least one live-captured
+  (`LIVE_CAMERA_STREAM`) evidence photo of the quote document(s) whenever
+  the quotes-on-file path is used (no `scrapBuyerBenchmarkId`) — same
+  hard-block discipline as DESTROY's evidence gate, stored as
+  `TransactionEvidence(referenceType: "ScrapSaleRecord")`, and re-checked
+  again at `postScrapSaleCertificate` time rather than only trusted from the
+  earlier step. UI: `CertificateActionPanel.tsx`'s scrap-sale quote card now
+  shows a `CameraCapture` block when "Two comparative quotes on file" is
+  selected, and the submit button is disabled with zero photos.
+
+`npx tsc --noEmit` and `npm run build` both clean after these fixes (the
+build initially failed with a `TurbopackInternalError` — stale `.next`
+cache, unrelated to the code changes; `rm -rf .next` before rebuilding
+resolved it, worth remembering if that error recurs).
+
+**This repo now has a second commit** covering all of Phase 3 plus these two
+fixes plus the earlier, previously-uncommitted route-group rename — the
+single-commit blocker flagged in both prior close-outs is resolved as of
+this session.
+
+## Where things stand (2026-08-18, close-out after Phase 3)
+
+Phase 3 (Returns, Damage/Disposal, Discrepancy Investigation) is code-complete
+against `C:\Users\user\.claude\plans\linear-stirring-rivest.md` — all 13
+build-order steps done. `npx tsc --noEmit` clean (re-verified independently
+by this close-out, not just trusted). Migrations applied and in sync with
+`schema.prisma` (`npx prisma migrate status` — "Database schema is up to
+date," 13 migrations). Shipped: `DiscrepancyCase` formalization (assign/
+close, nullable-at-creation, non-empty-resolution-required close);
+`ReturnQuantityLock` (deliberately NOT branch-scoped — the cross-branch
+double-return race G-17 exists to close); full Returns pipeline (authorize →
+receive → blind double-count → single/double-blind grading with R-2 SoD and
+Branch-Manager disagreement resolution → post → void); Receiving QUARANTINE
+exit path (`exitQuarantine`, quarantined lines get a real `StockBalance` via
+`encodeReceivingReport`); `DamageReportDisposalLock` (third concurrency
+fix, same class as `StockReservationLock`/`ReturnQuantityLock`); all four
+disposal dispositions (DESTROY evidence-gated, SELL_AS_SECONDS via
+`transferIntraBranch` unmodified, SCRAP_SALE benchmark/quotes-gated,
+RETURN_TO_SUPPLIER built fresh); G-09 on-demand aging check + two live
+reports; G-12 closure (`requestRetailSaleVoidWithoutReturn` → ADJ_01, never
+a silent reversal); ADJ_03 retirement (requires a linked `DamageReport`
+whose full quantity is covered by POSTED — not just non-VOID — disposal
+certificates).
+
+### Real bug found and fixed this session, and the part of it that's still open
+
+`computeRemainingUndisposedQty` (`src/server/domain/disposal/disposalLock.ts`)
+sums every non-VOID `DisposalCertificate` quantity against a `DamageReport`
+— DRAFT and FOR_DISPOSAL included, not just POSTED. That's correct for its
+original purpose (blocking a new certificate that would push the report's
+total over capacity, including certificates still in flight). But
+`markDamageReportDisposedIfComplete` (`finalize.ts`) reuses the exact same
+function to decide when to flip `DamageReport.status` to `DISPOSED`, which
+means a report can read DISPOSED while part of its quantity is still only
+claimed by an unposted DRAFT certificate that never actually moved stock.
+
+This was caught and fixed **for the ADJ_03 gate specifically**
+(`src/server/application/adjustment/post.ts` now re-derives "fully disposed"
+from POSTED certificates directly, never trusting `DamageReport.status`) —
+verified against that exact edge case with a focused test script.
+
+**It was not fixed at the source**, and the same flaw reaches a second,
+more consequential place this close-out found: `checkQuarantineDisposalAging`
+(G-09, `src/server/application/discrepancy/aging.ts`) excludes any
+`DamageReport` with `status` DISPOSED from its 14-day-dwell query, and the
+Quarantine & Disposal Aging report page applies the same exclusion. A report
+that prematurely reads DISPOSED (per the bug above) permanently drops out of
+both — and the DRAFT certificate itself is never separately checked, since
+the certificate-level aging query only looks at `status: "FOR_DISPOSAL"`,
+not DRAFT. Net effect: split a `DamageReport` across one certificate that
+gets POSTED and a second that's left sitting in DRAFT (abandoned, forgotten,
+or waiting on a buyer for weeks), and the undisposed remainder becomes
+permanently invisible to G-09 — the exact fraud-audit finding this feature
+exists to close. See the gap report from this close-out for the concrete
+repro. Fix direction: either compute "fully disposed" using POSTED-only
+quantity coverage (same logic already correct in `adjustment/post.ts`) as
+the single source of truth `finalize.ts` also calls, or have the aging
+check stop trusting `DamageReport.status` and independently sum POSTED
+qty vs. report qty the way the ADJ_03 gate does.
+
+### Known gap: SCRAP_SALE "quotes on file" path has zero verification
+
+`recordScrapSaleQuote` (`src/server/application/disposal/scrapSale.ts`)
+accepts `quotesOnFile: Array<{ buyerName, pricePerKg }>` as a plain
+caller-supplied JSON array — two entries is sufficient to satisfy BPD's
+"two comparative quotes on file" requirement and skip the benchmark
+comparison entirely, with no attached evidence (no photo/document upload,
+unlike DESTROY's hard evidence gate) and no server-side corroboration. Since
+`belowBenchmark` is only computed when a `scrapBuyerBenchmarkId` match
+exists (matches the plan's own stated design — "sales backed solely by two
+quotes on file don't require it"), typing in two fabricated quotes is a
+complete, self-service bypass of the one financial control this workflow
+has (Owner approval for below-benchmark sales). This is as-designed per the
+approved plan, not a deviation, but it's a real loophole worth flagging now
+rather than after someone finds it live — see the gap report.
+
+### Blocker, re-flagged (this is the same class of gap the 2026-08-12
+close-out and the SOP's own cross-project lessons log both warn about —
+re-verified via `git log`/`git status` directly, not trusted from a prior
+note): **one commit total exists in this repo** (`fcd7118`, "Phase 1 +
+Phase 2"). All of Phase 3 — every file listed above, five migrations, the
+schema/seed changes, the entire Returns/Disposal/Discrepancy UI and API
+surface — is uncommitted. On top of that, `git status` shows what looks
+like an earlier, also-never-committed route-group rename (`src/app/
+adjustments/...` etc. showing as deleted, `src/app/(dashboard)/adjustments/
+...` etc. as untracked) sitting in the same working tree from a prior
+session. There is currently no revert point between the single Phase 1+2
+commit and the sum of two more sessions of work. Not fixed by this audit
+(commits happen only when the user asks) — see the gap report for the full
+call-out.
+
 ## Where things stand (2026-08-12, close-out after Phase 2)
 
 Phase 1 (Foundation — ledger, identity, documents, receiving) and Phase 2

@@ -8,6 +8,7 @@ export class AdjustmentRequestNotFoundError extends Error {}
 export class InvalidAdjustmentStateError extends Error {}
 export class ReconciliationNotesRequiredError extends Error {}
 export class WrongAdjustmentDirectionError extends Error {}
+export class DamageReportRequiredForAdj03Error extends Error {}
 
 const A8_WINDOW_DAYS = 90;
 const A8_THRESHOLD_COUNT = 3;
@@ -34,6 +35,7 @@ export interface RequestAdjustmentParams {
   reasonCode: AdjustmentReasonCode;
   quantityDelta: number;
   reconciliationNotes: string;
+  damageReportId?: string;
 }
 
 /**
@@ -63,6 +65,20 @@ export async function requestAdjustment(prisma: PrismaClient, params: RequestAdj
     throw new WrongAdjustmentDirectionError("An adjustment must have a non-zero quantity delta.");
   }
 
+  // ADJ_03 retirement (Phase 3): "Damage found in storage" is no longer an
+  // independent write-off path now that Damage & Disposal has real
+  // controls (two witnesses, evidence, benchmarked scrap pricing). A
+  // linked DamageReport is required from the moment the request is raised
+  // — adjustment/post.ts separately re-checks that the report is fully
+  // disposed before this can ever post as a ledger no-op.
+  if (params.reasonCode === "ADJ_03") {
+    if (!params.damageReportId) {
+      throw new DamageReportRequiredForAdj03Error("ADJ_03 requires a linked DamageReport — damage write-offs go through Damage & Disposal now.");
+    }
+    const report = await prisma.damageReport.findUnique({ where: { id: params.damageReportId } });
+    if (!report) throw new DamageReportRequiredForAdj03Error(`DamageReport ${params.damageReportId} was not found.`);
+  }
+
   return prisma.$transaction(async (tx) => {
     // Held for the whole request-creation transaction so a concurrent
     // submission by the same requester can't compute a stale rolling total
@@ -87,6 +103,7 @@ export async function requestAdjustment(prisma: PrismaClient, params: RequestAdj
         reconciliationNotes: notes,
         status: "PENDING_INVESTIGATION",
         requestedBy: params.actorUserId,
+        damageReportId: params.damageReportId,
       },
     });
 

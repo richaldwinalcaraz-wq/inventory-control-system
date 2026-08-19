@@ -13,6 +13,7 @@ const bodySchema = z.object({
   reasonCode: z.enum(REASON_CODES),
   quantityDelta: z.number().refine((n) => n !== 0, "quantityDelta must be non-zero"),
   reconciliationNotes: z.string().min(1),
+  damageReportId: z.string().min(1).optional(),
 });
 
 export const POST = apiHandler(async (request) => {

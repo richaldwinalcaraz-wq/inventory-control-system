@@ -94,9 +94,18 @@ export async function encodeReceivingReport(prisma: PrismaClient, params: Encode
     const receivingLocation = await tx.warehouseLocation.findFirstOrThrow({
       where: { zone: "RECEIVING", warehouse: { branchId: rr.branchId } },
     });
+    // Quarantined lines (Phase 1 inspection REJECT) never enter the
+    // RECEIVING zone — they get a real StockBalance row in QUARANTINE
+    // itself, so the fraud-audit doc's "quarantined stock counts as
+    // on-hand" claim actually holds. Only looked up if this RR has any.
+    const hasQuarantinedLines = rr.lines.some((l) => l.lineStatus === "QUARANTINED");
+    const quarantineLocation = hasQuarantinedLines
+      ? await tx.warehouseLocation.findFirstOrThrow({ where: { zone: "QUARANTINE", warehouse: { branchId: rr.branchId } } })
+      : null;
 
     const ledgerRows = [];
     for (const line of rr.lines) {
+      const destinationLocation = line.lineStatus === "QUARANTINED" ? quarantineLocation! : receivingLocation;
       const requestPayload = { rrId: rr.id, productVariantId: line.productVariantId, finalQty: line.finalQty!.toString() };
       const result = await postLedgerEntryInTx(tx, {
         idempotency: {
@@ -107,7 +116,7 @@ export async function encodeReceivingReport(prisma: PrismaClient, params: Encode
         },
         branchId: rr.branchId,
         productVariantId: line.productVariantId,
-        warehouseLocationId: receivingLocation.id,
+        warehouseLocationId: destinationLocation.id,
         quantityDeltaBase: line.finalQty!.toString(),
         movementType: "RECEIVING",
         unitCostAtMovement: line.unitCost.toString(),

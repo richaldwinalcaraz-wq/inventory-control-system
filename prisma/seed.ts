@@ -178,6 +178,9 @@ async function main() {
     { role: RoleName.CASHIER, action: "retail.sale.post.create", effect: PermissionEffect.CREATE },
     { role: RoleName.CASHIER, action: "retail.sale.void.create", effect: PermissionEffect.CREATE },
     { role: RoleName.BRANCH_MANAGER, action: "retail.sale.void.create", effect: PermissionEffect.CREATE },
+    // G-12: post-handover void with no goods returned — Branch Manager+ only, never a cashier self-service action.
+    { role: RoleName.BRANCH_MANAGER, action: "retail.sale.void-without-return.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "retail.sale.void-without-return.create", effect: PermissionEffect.CREATE },
     // Intra-branch Storage -> Counter replenishment, closing the untracked-
     // counter-stock gap named in BPD sec.8.1 — a warehouse action, not a
     // Cashier one.
@@ -220,6 +223,52 @@ async function main() {
     { role: RoleName.OWNER, action: "wholesale.release.void.create", effect: PermissionEffect.CREATE },
     { role: RoleName.WAREHOUSE_SUPERVISOR, action: "wholesale.pod.record.create", effect: PermissionEffect.CREATE },
     { role: RoleName.ENCODER, action: "wholesale.pod.record.create", effect: PermissionEffect.CREATE },
+
+    // Discrepancy case investigation (Phase 3). Same tier that already
+    // reviews the cases these auto-open from (G-05 Owner-approval fallback,
+    // G-14 evidence mismatch, A-8 recurrence flag) — Branch Manager for
+    // day-to-day ownership, Auditor for the cases escalated to them, Owner
+    // as the top-of-chain fallback.
+    { role: RoleName.BRANCH_MANAGER, action: "discrepancy.assign.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "discrepancy.assign.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "discrepancy.assign.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "discrepancy.close.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "discrepancy.close.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "discrepancy.close.create", effect: PermissionEffect.CREATE },
+
+    // Customer Returns (Phase 3, BPD sec.9, G-15/G-16/G-17). Issuance has
+    // no separate later approval step — the issuer must already meet the
+    // resolveRequiredApprover tier, so both Branch Manager and Owner are
+    // granted create here and the threshold engine decides which one is
+    // actually required for a given return's value/risk tier.
+    { role: RoleName.BRANCH_MANAGER, action: "returns.authorize.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "returns.authorize.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "returns.receive.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "returns.count.receive.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "returns.count.check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "returns.grade.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "returns.grade.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "returns.grade.resolve-dispute.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "returns.grade.resolve-dispute.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.ENCODER, action: "returns.post.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "returns.void.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "returns.void.create", effect: PermissionEffect.CREATE },
+
+    // Damage & Disposal (Phase 3, BPD sec.8.4, G-18/G-19/G-20).
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "disposal.report.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "disposal.report.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "disposal.report.investigate.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "disposal.certificate.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "disposal.certificate.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "disposal.certificate.destroy.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "disposal.certificate.scrap-sale.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "disposal.certificate.scrap-sale.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "disposal.certificate.sell-as-seconds.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "disposal.certificate.return-to-supplier.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "disposal.certificate.void.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "disposal.certificate.void.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "disposal.aging-check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "disposal.aging-check.create", effect: PermissionEffect.CREATE },
   ];
 
   for (const p of permissions) {
@@ -336,6 +385,8 @@ async function main() {
     { id: "seed-booklet-si-ilo-2026", documentType: "SI" }, // Retail Sales Invoice/OR (Phase 2)
     { id: "seed-booklet-adj-ilo-2026", documentType: "ADJ" }, // Adjustments (Phase 2)
     { id: "seed-booklet-dr-ilo-2026", documentType: "DR" }, // Wholesale Delivery Receipt (Phase 2)
+    { id: "seed-booklet-ra-ilo-2026", documentType: "RA" }, // Customer Return Authorization (Phase 3)
+    { id: "seed-booklet-dc-ilo-2026", documentType: "DC" }, // Disposal Certificate (Phase 3)
   ];
   for (const b of booklets) {
     await prisma.documentBookletRegistry.upsert({
@@ -395,6 +446,67 @@ async function main() {
       id: "seed-threshold-adjustment-tier2",
       transactionType: "ADJUSTMENT",
       minValue: 10000.01,
+      maxValue: null,
+      requiredApproverRole: RoleName.OWNER,
+    },
+    // Same recommended-default methodology (client-decisions-needed.md #2)
+    // — RETURN_NO_DOCUMENT is deliberately a stricter (lower) cutover to
+    // Owner than ordinary RETURN, since identityVerification == NONE is
+    // the higher-fraud-risk path (BPD/G-15).
+    {
+      id: "seed-threshold-return-tier1",
+      transactionType: "RETURN",
+      minValue: 0,
+      maxValue: 10000,
+      requiredApproverRole: RoleName.BRANCH_MANAGER,
+    },
+    {
+      id: "seed-threshold-return-tier2",
+      transactionType: "RETURN",
+      minValue: 10000.01,
+      maxValue: null,
+      requiredApproverRole: RoleName.OWNER,
+    },
+    {
+      id: "seed-threshold-return-no-document-tier1",
+      transactionType: "RETURN_NO_DOCUMENT",
+      minValue: 0,
+      maxValue: 2000,
+      requiredApproverRole: RoleName.BRANCH_MANAGER,
+    },
+    {
+      id: "seed-threshold-return-no-document-tier2",
+      transactionType: "RETURN_NO_DOCUMENT",
+      minValue: 2000.01,
+      maxValue: null,
+      requiredApproverRole: RoleName.OWNER,
+    },
+    // RETURN_GRADING isn't a role-of-approval lookup like the others — it's
+    // reused as a boolean signal (see grade.ts's SINGLE_GRADING_SUFFICIENT_
+    // TIER): resolving to WAREHOUSE_SUPERVISOR means a single grading
+    // suffices, resolving to anything above it means double-blind grading
+    // is mandatory.
+    {
+      id: "seed-threshold-return-grading-tier1",
+      transactionType: "RETURN_GRADING",
+      minValue: 0,
+      maxValue: 5000,
+      requiredApproverRole: RoleName.WAREHOUSE_SUPERVISOR,
+    },
+    {
+      id: "seed-threshold-return-grading-tier2",
+      transactionType: "RETURN_GRADING",
+      minValue: 5000.01,
+      maxValue: null,
+      requiredApproverRole: RoleName.BRANCH_MANAGER,
+    },
+    // SCRAP_SALE_BELOW_BENCHMARK — same reuse pattern: any resolved role
+    // other than a no-op tier means Owner sign-off is required. A single
+    // tier starting at 0 means every below-benchmark scrap sale needs it.
+    {
+      id: "seed-threshold-scrap-sale-below-benchmark",
+      transactionType: "SCRAP_SALE_BELOW_BENCHMARK",
+      minValue: 0,
       maxValue: null,
       requiredApproverRole: RoleName.OWNER,
     },

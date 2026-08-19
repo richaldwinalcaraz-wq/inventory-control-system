@@ -50,6 +50,8 @@ model Branch {
   adjustmentRequests        AdjustmentRequest[]
   salesOrders               SalesOrder[]
   stockReservations         StockReservation[]
+  returnAuthorizations      ReturnAuthorization[]
+  damageReports             DamageReport[]
 
   @@map("branch")
 }
@@ -262,6 +264,7 @@ model WarehouseLocation {
   stockLedgers       StockLedger[]
   stockBalances      StockBalance[]
   adjustmentRequests AdjustmentRequest[]
+  damageReports      DamageReport[]
 
   @@unique([warehouseId, code])
   @@map("warehouse_location")
@@ -309,6 +312,8 @@ model ProductVariant {
   adjustmentRequests   AdjustmentRequest[]
   salesOrderLines      SalesOrderLine[]
   stockReservations    StockReservation[]
+  returnAuthorizations ReturnAuthorization[]
+  damageReports        DamageReport[]
 
   @@map("product_variant")
 }
@@ -360,6 +365,7 @@ enum MovementType {
   SALE_OUT
   RETURN_IN
   RETURN_OUT
+  DAMAGE_OUT
   REVERSAL
 }
 
@@ -513,11 +519,13 @@ model DocumentNumber {
   referenceId  String?  @map("reference_id")
   issuedAt     DateTime @default(now()) @map("issued_at")
 
-  branch            Branch             @relation(fields: [branchId], references: [id])
-  receivingReport   ReceivingReport?
-  retailSale        RetailSale?
-  adjustmentRequest AdjustmentRequest?
-  salesOrderRelease SalesOrderRelease?
+  branch              Branch               @relation(fields: [branchId], references: [id])
+  receivingReport     ReceivingReport?
+  retailSale          RetailSale?
+  adjustmentRequest   AdjustmentRequest?
+  salesOrderRelease   SalesOrderRelease?
+  returnAuthorization ReturnAuthorization?
+  disposalCertificate DisposalCertificate?
 
   @@unique([branchId, documentType, year, sequenceNo])
   @@map("document_number")
@@ -634,6 +642,8 @@ enum CountSlipRole {
   WHOLESALE_CHECK // Phase 2 — Wholesale's blind checker recount, against the order not the picker's figure
   ADJUSTMENT_RECOUNT // Phase 2 — Adjustment workflow's independent recount
   SPOT_RECOUNT // Phase 2 — Wholesale release's random independent spot-recount (G-10)
+  RETURN_RECEIVE // Phase 3 — Returns' blind first count on arrival
+  RETURN_CHECK // Phase 3 — Returns' blind second count, checker must not be the receiver
 }
 
 // Deliberately standalone, not embedded in the parent document — merging
@@ -799,6 +809,11 @@ model AdjustmentRequest {
   postedBy            String?              @map("posted_by")
   documentNumberId    String?              @unique @map("document_number_id")
   voidReason          String?              @map("void_reason")
+  // Phase 3: ADJ_03 ("Damage found in storage") retirement — once set,
+  // posting this request is a ledger no-op (the linked DamageReport's own
+  // DisposalCertificate already moved the stock); this FK is purely the
+  // paper-trail cross-reference. See adjustment/post.ts.
+  damageReportId      String?              @map("damage_report_id")
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
 
@@ -806,7 +821,15 @@ model AdjustmentRequest {
   productVariant    ProductVariant    @relation(fields: [productVariantId], references: [id])
   warehouseLocation WarehouseLocation @relation(fields: [warehouseLocationId], references: [id])
   documentNumber    DocumentNumber?   @relation(fields: [documentNumberId], references: [id])
+  damageReport      DamageReport?     @relation(fields: [damageReportId], references: [id])
 
+  // G-21's rolling-total query (velocity.ts) and A-8's recurrence count
+  // (request.ts) both filter/sort on these — created in the Phase 2
+  // migration's raw SQL but never declared here, which caused Phase 3's
+  // migrate dev to read them as drift and drop them. Declared now so they
+  // survive every future migration diff.
+  @@index([requestedBy, createdAt])
+  @@index([productVariantId, warehouseLocationId, createdAt])
   @@map("adjustment_request")
 }
 
@@ -828,9 +851,10 @@ enum DiscrepancyCaseStatus {
   CLOSED
 }
 
-// Minimal placeholder only — no investigation workflow (that's Phase 3
-// scope). Exists so G-05's Owner-approval fallback and BR-093's
-// evidence-mismatch path have somewhere to write a record instead of nothing.
+// Investigation workflow (Phase 3): assignedTo/resolution are nullable at
+// creation — Phase 1/2 call sites (G-05, G-14, A-8) auto-open cases with no
+// assignee in mind at open time. closeDiscrepancyCase hard-requires both
+// before a case can move to CLOSED.
 model DiscrepancyCase {
   id            String                @id @default(uuid())
   referenceType String                @map("reference_type")
@@ -839,6 +863,8 @@ model DiscrepancyCase {
   openedAt      DateTime              @default(now()) @map("opened_at")
   status        DiscrepancyCaseStatus @default(OPEN)
   notes         String?
+  assignedTo    String?               @map("assigned_to")
+  resolution    String?
   closedBy      String?               @map("closed_by")
   closedAt      DateTime?             @map("closed_at")
 
@@ -1050,4 +1076,238 @@ model SalesOrderReleaseLine {
   salesOrderLine    SalesOrderLine    @relation(fields: [salesOrderLineId], references: [id])
 
   @@map("sales_order_release_line")
+}
+
+// ── Phase 3 — Customer Returns (G-15, G-16, G-17, G-12) ──────────────────
+
+enum ReturnReasonCode {
+  WRONG_ITEM
+  WRONG_SIZE_GAUGE
+  DAMAGED_ON_DELIVERY
+  DEFECTIVE
+  OVER_DELIVERED
+  CUSTOMER_CANCELLED
+  UNSOLD_STOCK_RETURN
+}
+
+enum ReturnIdentityVerification {
+  PHYSICAL_RECEIPT
+  MATCHED_IDENTITY
+  NONE
+}
+
+enum ReturnGrade {
+  SELLABLE
+  REPACKABLE
+  DAMAGED
+  NOT_OURS
+}
+
+enum ReturnAuthorizationStatus {
+  ISSUED
+  GOODS_RECEIVED
+  GRADING_DISPUTED
+  GRADED
+  REJECTED_NOT_OURS
+  VOID
+  EXPIRED
+}
+
+// originalSaleType/originalSaleLineId are polymorphic ("RetailSale" |
+// "SalesOrder" + the specific line id), same accepted no-FK tradeoff as
+// CountSlip/DiscrepancyCase — a bad line id fails silently rather than at
+// insert. isHighRisk is computed at issuance (identityVerification ==
+// NONE) and stored rather than derived on every read, since it also drives
+// which approval-threshold tier applies (RETURN vs RETURN_NO_DOCUMENT).
+model ReturnAuthorization {
+  id                   String                      @id @default(uuid())
+  branchId             String                      @map("branch_id") // branch handling the return — may differ from the original sale's branch
+  originalSaleType     String                      @map("original_sale_type")
+  originalSaleLineId   String                      @map("original_sale_line_id")
+  productVariantId     String                      @map("product_variant_id")
+  requestedQty         Decimal                     @map("requested_qty") @db.Decimal(18, 4)
+  reasonCode           ReturnReasonCode            @map("reason_code")
+  identityVerification ReturnIdentityVerification  @map("identity_verification")
+  isHighRisk           Boolean                     @default(false) @map("is_high_risk")
+  verifiedIdName       String?                     @map("verified_id_name") // logged for above-threshold wholesale-value returns
+  verifiedIdContact    String?                     @map("verified_id_contact")
+  issuedBy             String                      @map("issued_by")
+  status               ReturnAuthorizationStatus   @default(ISSUED)
+  expiresAt            DateTime                    @map("expires_at") // default +7d — an ISSUED RA past this is treated as functionally expired lazily, not via a scheduled job
+  finalGrade           ReturnGrade?                @map("final_grade") // only populated on grader disagreement (R-2) — see ReturnGrading
+  finalGradeDecidedBy  String?                     @map("final_grade_decided_by")
+  finalGradeDecidedAt  DateTime?                   @map("final_grade_decided_at")
+  documentNumberId     String?                     @unique @map("document_number_id")
+  createdAt            DateTime                    @default(now()) @map("created_at")
+  updatedAt            DateTime                    @updatedAt @map("updated_at")
+
+  branch         Branch          @relation(fields: [branchId], references: [id])
+  productVariant ProductVariant  @relation(fields: [productVariantId], references: [id])
+  documentNumber DocumentNumber? @relation(fields: [documentNumberId], references: [id])
+  gradings       ReturnGrading[]
+
+  // Backs computeRemainingReturnableQty's SUM query — deliberately not
+  // combined with branchId, since remaining-qty is a global, cross-branch
+  // computation (see ReturnQuantityLock below).
+  @@index([originalSaleType, originalSaleLineId])
+  @@map("return_authorization")
+}
+
+// Lazily-upserted-then-FOR-UPDATE mutex row keyed on the ORIGINAL SALE LINE
+// only — deliberately NOT branch-scoped. A return against the same invoice
+// line can legitimately be attempted from a different branch than the
+// original sale, and BPD's amended G-17 rule requires the remaining-
+// returnable counter to be enforced as a hard block across all branches.
+// Branch-scoping this the way StockReservationLock scopes to
+// (productVariantId, branchId) would silently reopen the double-return
+// race G-17 exists to close. Same lock -> compute -> insert shape as
+// stock_reservation_lock/adjustment_velocity_lock.
+model ReturnQuantityLock {
+  originalSaleType   String @map("original_sale_type")
+  originalSaleLineId String @map("original_sale_line_id")
+
+  @@id([originalSaleType, originalSaleLineId])
+  @@map("return_quantity_lock")
+}
+
+// graderSeq 1|2 — the @@unique constraint is the whole blind-view
+// discipline: it's what stops two grader-1 (or two grader-2) rows landing,
+// not a lock. "Never show grader 2 grader 1's result" is purely an
+// API-response-shaping rule enforced in application code, not a schema
+// concern. Evidence photos (TransactionEvidence, referenceType
+// "ReturnGrading") are keyed to this row's own id, not the RA's, so
+// grader-1's and grader-2's evidence never conflate.
+model ReturnGrading {
+  id                    String      @id @default(uuid())
+  returnAuthorizationId String      @map("return_authorization_id")
+  graderSeq             Int         @map("grader_seq")
+  gradedBy              String      @map("graded_by")
+  grade                 ReturnGrade
+  notes                 String?
+  gradedAt              DateTime    @default(now()) @map("graded_at")
+
+  returnAuthorization ReturnAuthorization @relation(fields: [returnAuthorizationId], references: [id])
+
+  @@unique([returnAuthorizationId, graderSeq])
+  @@map("return_grading")
+}
+
+// ── Phase 3 — Damage & Disposal (G-18, G-19, G-20) ────────────────────────
+
+enum DamageReportStatus {
+  REPORTED
+  INVESTIGATED
+  DISPOSED
+  CLOSED
+}
+
+// Deliberately no punitive/disciplinary field — G-20's no-fault reporting
+// is enforced by absence, not a flag. sourceReferenceType/Id are
+// polymorphic (e.g. a ReceivingReportLine or a ReturnAuthorization), same
+// no-FK tradeoff as every other polymorphic reference table here.
+model DamageReport {
+  id                  String             @id @default(uuid())
+  branchId            String             @map("branch_id")
+  productVariantId    String             @map("product_variant_id")
+  warehouseLocationId String             @map("warehouse_location_id")
+  sourceType          String             @map("source_type") // "RECEIVING" | "STORAGE" | "RETURN" | "HANDLING"
+  sourceReferenceType String?            @map("source_reference_type")
+  sourceReferenceId   String?            @map("source_reference_id")
+  quantity            Decimal            @db.Decimal(18, 4)
+  reportedBy          String             @map("reported_by")
+  reportedAt          DateTime           @default(now()) @map("reported_at")
+  cause               String // mandatory, non-empty — "Damaged" alone is not acceptable (enforced same as reconciliationNotes)
+  status               DamageReportStatus @default(REPORTED)
+  quarantineEnteredAt DateTime           @default(now()) @map("quarantine_entered_at") // G-09's 14-day dwell clock
+
+  branch            Branch              @relation(fields: [branchId], references: [id])
+  productVariant    ProductVariant      @relation(fields: [productVariantId], references: [id])
+  warehouseLocation WarehouseLocation   @relation(fields: [warehouseLocationId], references: [id])
+  disposalCertificates DisposalCertificate[]
+  adjustmentRequests   AdjustmentRequest[]
+
+  @@map("damage_report")
+}
+
+// Lazily-upserted-then-FOR-UPDATE mutex row, one per DamageReport — the
+// third concurrency fix (same class as StockReservationLock/
+// ReturnQuantityLock): without it, two DisposalCertificates could be
+// created concurrently against the same report, each individually valid,
+// whose combined quantity exceeds the report's total.
+model DamageReportDisposalLock {
+  damageReportId String @id @map("damage_report_id")
+
+  @@map("damage_report_disposal_lock")
+}
+
+enum DisposalDisposition {
+  DESTROY
+  SCRAP_SALE
+  RETURN_TO_SUPPLIER
+  SELL_AS_SECONDS
+}
+
+enum DisposalCertificateStatus {
+  DRAFT
+  FOR_DISPOSAL
+  POSTED
+  VOID
+}
+
+model DisposalCertificate {
+  id               String                     @id @default(uuid())
+  damageReportId   String                     @map("damage_report_id")
+  disposition      DisposalDisposition
+  decidedBy        String                     @map("decided_by")
+  quantity         Decimal                    @db.Decimal(18, 4)
+  valueAtCost      Decimal                    @map("value_at_cost") @db.Decimal(18, 4) // frozen snapshot, same pattern as AdjustmentRequest.value
+  witness1Id       String                     @map("witness1_id")
+  witness2Id       String                     @map("witness2_id") // server-side checked: not a warehouse role
+  status           DisposalCertificateStatus  @default(DRAFT)
+  forDisposalEnteredAt DateTime?               @map("for_disposal_entered_at") // G-09's 30-day dwell clock — set once, first FOR_DISPOSAL transition
+  documentNumberId String?                    @unique @map("document_number_id")
+  voidReason       String?                    @map("void_reason")
+  createdAt        DateTime                   @default(now()) @map("created_at")
+  updatedAt        DateTime                   @updatedAt @map("updated_at")
+
+  damageReport   DamageReport    @relation(fields: [damageReportId], references: [id])
+  documentNumber DocumentNumber? @relation(fields: [documentNumberId], references: [id])
+  scrapSaleRecord ScrapSaleRecord?
+
+  @@map("disposal_certificate")
+}
+
+// Master list of approved scrap buyers with a benchmark rate — one of the
+// two satisfying paths for a scrap sale not requiring Owner sign-off (the
+// other is two comparative quotes on file).
+model ScrapBuyerBenchmark {
+  id                  String   @id @default(uuid())
+  buyerName           String
+  benchmarkRatePerKg  Decimal  @map("benchmark_rate_per_kg") @db.Decimal(12, 2)
+  approvedBy          String   @map("approved_by")
+  effectiveFrom       DateTime @map("effective_from")
+
+  @@map("scrap_buyer_benchmark")
+}
+
+// 1:1 with DisposalCertificate (@unique) — a certificate has exactly one
+// scrap sale record, closing a trivial double-post race at the schema
+// level with no extra lock needed.
+model ScrapSaleRecord {
+  id                     String   @id @default(uuid())
+  disposalCertificateId  String   @unique @map("disposal_certificate_id")
+  buyerId                String?  @map("buyer_id") // free-form external identifier — no internal ScrapBuyer master table
+  buyerName              String   @map("buyer_name")
+  pricePerKg             Decimal  @map("price_per_kg") @db.Decimal(12, 2)
+  weightKg               Decimal  @map("weight_kg") @db.Decimal(10, 3)
+  totalValue             Decimal  @map("total_value") @db.Decimal(18, 4)
+  quotesOnFile           Json?    @map("quotes_on_file") // two comparative quotes, path 1
+  scrapBuyerBenchmarkId  String?  @map("scrap_buyer_benchmark_id") // path 2
+  belowBenchmark         Boolean  @default(false) @map("below_benchmark")
+  ownerApprovedBy        String?  @map("owner_approved_by") // required if belowBenchmark
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  disposalCertificate DisposalCertificate @relation(fields: [disposalCertificateId], references: [id])
+
+  @@map("scrap_sale_record")
 }
