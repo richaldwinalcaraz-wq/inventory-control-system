@@ -4,8 +4,8 @@ import { getAppSession } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
-
-const VIEWER_ROLES = new Set(["BRANCH_MANAGER", "AUDITOR", "OWNER"]);
+import { getQuarantineDisposalAgingReport } from "@/server/application/reporting/quarantineDisposalAging";
+import { PermissionDeniedError } from "@/server/domain/rbac/assertPermission";
 
 function daysSince(date: Date): number {
   return Math.floor((Date.now() - date.getTime()) / (24 * 60 * 60 * 1000));
@@ -14,33 +14,14 @@ function daysSince(date: Date): number {
 export default async function QuarantineDisposalAgingReportPage() {
   const session = await getAppSession();
   if (!session) redirect("/login");
-  if (!VIEWER_ROLES.has(session.user.role)) redirect("/");
 
-  const [reports, certificates] = await Promise.all([
-    prisma.damageReport.findMany({
-      where: { status: { notIn: ["DISPOSED", "CLOSED"] } },
-      orderBy: { quarantineEnteredAt: "asc" },
-      select: {
-        id: true,
-        quarantineEnteredAt: true,
-        quantity: true,
-        status: true,
-        productVariant: { select: { sku: true } },
-        branch: { select: { name: true } },
-      },
-    }),
-    prisma.disposalCertificate.findMany({
-      where: { status: "FOR_DISPOSAL", forDisposalEnteredAt: { not: null } },
-      orderBy: { forDisposalEnteredAt: "asc" },
-      select: {
-        id: true,
-        forDisposalEnteredAt: true,
-        disposition: true,
-        quantity: true,
-        damageReport: { select: { productVariant: { select: { sku: true } }, branch: { select: { name: true } } } },
-      },
-    }),
-  ]);
+  let reports, certificates;
+  try {
+    ({ reports, certificates } = await getQuarantineDisposalAgingReport(prisma, { actorRole: session.user.role }));
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) redirect("/");
+    throw err;
+  }
 
   return (
     <div className="mx-auto max-w-5xl">
