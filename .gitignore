@@ -25,6 +25,7 @@ yarn-error.log*
 # local env files
 .env
 .env*.local
+.env.test
 
 # vercel
 .vercel
@@ -42,3 +43,6 @@ docs/Inventory-Five-Phase-Build-Plan.html
 
 # Local dev evidence uploads — never committed
 storage/
+
+# scratch/intermediate files — regenerated as needed, disposable (see CLAUDE.md)
+.tmp/

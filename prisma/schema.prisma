@@ -52,6 +52,12 @@ model Branch {
   stockReservations         StockReservation[]
   returnAuthorizations      ReturnAuthorization[]
   damageReports             DamageReport[]
+  cycleCountWindows         CycleCountWindow[]
+  cycleCountSchedules       CycleCountSchedule[]
+  cycleCountRecords         CycleCountRecord[]
+  dailyReconciliations      DailyReconciliation[]
+  transfersOut              InterBranchTransfer[] @relation("TransferFromBranch")
+  transfersIn               InterBranchTransfer[] @relation("TransferToBranch")
 
   @@map("branch")
 }
@@ -301,6 +307,9 @@ model ProductVariant {
   sellingPrice Decimal  @map("selling_price") @db.Decimal(12, 2)
   status       String   @default("ACTIVE")
   createdAt    DateTime @default(now()) @map("created_at")
+  // Null = no alert configured for this product. Company-wide, not per-branch
+  // — ProductVariant is a global catalog row; only StockBalance is branch-scoped.
+  reorderPoint Decimal? @map("reorder_point") @db.Decimal(18, 4)
 
   product              Product                 @relation(fields: [productId], references: [id])
   conversionRates      ConversionRateVersion[]
@@ -314,6 +323,7 @@ model ProductVariant {
   stockReservations    StockReservation[]
   returnAuthorizations ReturnAuthorization[]
   damageReports        DamageReport[]
+  interBranchTransfers InterBranchTransfer[]
 
   @@map("product_variant")
 }
@@ -402,6 +412,25 @@ model StockLedger {
 
   @@index([branchId, productVariantId, warehouseLocationId])
   @@map("stock_ledger")
+}
+
+// Single, stable pointer row (id always 1) tracking the hash chain's tail —
+// sequence_no/row_hash of the most recently posted StockLedger row.
+// Locking this fixed row (never "the last StockLedger row by ORDER BY
+// sequence_no DESC LIMIT 1") is what actually serializes concurrent
+// posters: a blocked FOR UPDATE waiter re-reads THIS row's fresh values
+// once unblocked, whereas locking a query-selected "last row" leaves every
+// waiter holding a stale reference to the row it originally identified —
+// Postgres does not re-run the ORDER BY/LIMIT after a blocked lock clears.
+// Found via a concurrency stress test that reproduced mass sequence_no
+// unique-constraint collisions when postLedgerEntry used the ORDER BY
+// pattern directly against stock_ledger.
+model StockLedgerChainTail {
+  id         Int    @id
+  sequenceNo BigInt @default(0) @map("sequence_no")
+  rowHash    String @default("0000000000000000000000000000000000000000000000000000000000000000") @map("row_hash") @db.Char(64)
+
+  @@map("stock_ledger_chain_tail")
 }
 
 // One row per business day — the terminal hash actually exported/emailed.
@@ -526,6 +555,7 @@ model DocumentNumber {
   salesOrderRelease   SalesOrderRelease?
   returnAuthorization ReturnAuthorization?
   disposalCertificate DisposalCertificate?
+  interBranchTransfer InterBranchTransfer?
 
   @@unique([branchId, documentType, year, sequenceNo])
   @@map("document_number")
@@ -644,6 +674,13 @@ enum CountSlipRole {
   SPOT_RECOUNT // Phase 2 — Wholesale release's random independent spot-recount (G-10)
   RETURN_RECEIVE // Phase 3 — Returns' blind first count on arrival
   RETURN_CHECK // Phase 3 — Returns' blind second count, checker must not be the receiver
+  CYCLE_COUNT_PRIMARY // Phase 4 — Cycle Count's blind first count
+  CYCLE_COUNT_SECONDARY // Phase 4 — Cycle Count's blind second count
+  CYCLE_COUNT_RECOUNT // Phase 4 — post-tiebreak, beyond-tolerance recount by a 4th distinct person
+  TRANSFER_PICK // Phase 4 — Inter-Branch Transfer's visible pick count (mirrors wholesale picking, not blind)
+  TRANSFER_CHECK // Phase 4 — Inter-Branch Transfer's blind recount, checker must not be the picker
+  TRANSFER_RECEIVE // Phase 4 — Inter-Branch Transfer's blind first count on arrival
+  TRANSFER_RECEIVE_CHECK // Phase 4 — Inter-Branch Transfer's blind second count on arrival, checker must not be the receiver
 }
 
 // Deliberately standalone, not embedded in the parent document — merging
@@ -664,6 +701,14 @@ model CountSlip {
   countedBy     String        @map("counted_by")
   witnessedBy   String?       @map("witnessed_by") // required for TIEBREAK slips
   countedAt     DateTime      @default(now()) @map("counted_at")
+  // G-24 chain-of-custody, Phase 4 Cycle Count only — nullable so every
+  // pre-existing role (RECEIVER, WHOLESALE_CHECK, RETURN_RECEIVE, etc.)
+  // that never populates these keeps working unchanged, same "nullable-at-
+  // creation doesn't break shipped call sites" precedent as
+  // DiscrepancyCase.assignedTo.
+  completedAt      DateTime? @map("completed_at") // when physical counting finished, distinct from countedAt (submission time)
+  collectedBy      String?   @map("collected_by") // third party who collected the sheet; enforced != countedBy in submitCycleCount only
+  submissionMethod String?   @map("submission_method") // "THIRD_PARTY_COLLECTED" | "INSTANT_PHOTO_SUBMIT"
 
   lines CountSlipLine[]
 
@@ -814,6 +859,11 @@ model AdjustmentRequest {
   // DisposalCertificate already moved the stock); this FK is purely the
   // paper-trail cross-reference. See adjustment/post.ts.
   damageReportId      String?              @map("damage_report_id")
+  // Phase 4: links a cycle-count write-off back to the CycleCountRecord
+  // that produced it — paper-trail only, same reasoning as damageReportId;
+  // reuses ADJ_01/ADJ_02, never a dedicated cycle-count reason code, so
+  // Phase 3's damage-vs-shrinkage report already covers these too.
+  cycleCountRecordId String?              @map("cycle_count_record_id")
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
 
@@ -822,6 +872,7 @@ model AdjustmentRequest {
   warehouseLocation WarehouseLocation @relation(fields: [warehouseLocationId], references: [id])
   documentNumber    DocumentNumber?   @relation(fields: [documentNumberId], references: [id])
   damageReport      DamageReport?     @relation(fields: [damageReportId], references: [id])
+  cycleCountRecord  CycleCountRecord? @relation(fields: [cycleCountRecordId], references: [id])
 
   // G-21's rolling-total query (velocity.ts) and A-8's recurrence count
   // (request.ts) both filter/sort on these — created in the Phase 2
@@ -1310,4 +1361,244 @@ model ScrapSaleRecord {
   disposalCertificate DisposalCertificate @relation(fields: [disposalCertificateId], references: [id])
 
   @@map("scrap_sale_record")
+}
+
+// ── Phase 4 — Daily Reconciliation (BPD sec.14.3-14.4, G-26) ─────────────
+model DailyReconciliation {
+  id           String    @id @default(uuid())
+  branchId     String    @map("branch_id")
+  businessDate DateTime  @map("business_date") @db.Date
+  preparedBy   String    @map("prepared_by")
+  preparedAt   DateTime  @default(now()) @map("prepared_at")
+  signedOffBy  String?   @map("signed_off_by")
+  signedOffAt  DateTime? @map("signed_off_at")
+
+  branch Branch                    @relation(fields: [branchId], references: [id])
+  lines  DailyReconciliationLine[]
+
+  @@unique([branchId, businessDate])
+  @@map("daily_reconciliation")
+}
+
+// binCardPhotoEvidenceId is deliberately NOT a field here — TransactionEvidence
+// already points AT what it's evidence for via referenceType/referenceId
+// (never the reverse), same as every other evidence usage in this codebase
+// (Receiving, Disposal DESTROY, Returns grading, Scrap-sale quotes). A photo
+// for a line is queried as TransactionEvidence where referenceType =
+// "DailyReconciliationLine" AND referenceId = this line's id.
+model DailyReconciliationLine {
+  id                       String    @id @default(uuid())
+  dailyReconciliationId    String    @map("daily_reconciliation_id")
+  productVariantId         String    @map("product_variant_id")
+  warehouseLocationId      String    @map("warehouse_location_id")
+  openingQty               Decimal   @map("opening_qty") @db.Decimal(18, 4)
+  stockInQty               Decimal   @map("stock_in_qty") @db.Decimal(18, 4)
+  stockOutQty              Decimal   @map("stock_out_qty") @db.Decimal(18, 4)
+  systemExpectedClosingQty Decimal   @map("system_expected_closing_qty") @db.Decimal(18, 4) // = opening + in - out, from StockLedger
+  binCardQty               Decimal?  @map("bin_card_qty") @db.Decimal(18, 4)
+  variance                 Decimal?  @db.Decimal(18, 4)
+  matched                  Boolean?
+  reviewedBy               String?   @map("reviewed_by")
+  // Not a hard block — BPD explicitly allows small-branch reality to force
+  // an ineligible reviewer; false routes to the Auditor and excludes this
+  // line from "clean close" instead of refusing the review outright.
+  reviewerEligible         Boolean?  @map("reviewer_eligible")
+  reviewedAt               DateTime? @map("reviewed_at")
+  routedToAuditor          Boolean   @default(false) @map("routed_to_auditor") // true if !matched OR !reviewerEligible
+
+  dailyReconciliation DailyReconciliation @relation(fields: [dailyReconciliationId], references: [id])
+
+  @@map("daily_reconciliation_line")
+}
+
+// ── Phase 4 — Cycle Counts (BPD sec.12.1, G-08) ──────────────────────────
+// Branch-wide freeze session. While ACTIVE, assertBranchMovementAllowed
+// blocks new Picking Lists and new Receiving postings for the whole branch
+// (not just the location being counted) — see Phase 4 plan sec.2.2.
+enum CycleCountWindowStatus {
+  ACTIVE
+  CLOSED
+}
+
+model CycleCountWindow {
+  id         String                 @id @default(uuid())
+  branchId   String                 @map("branch_id")
+  declaredBy String                 @map("declared_by")
+  startedAt  DateTime               @default(now()) @map("started_at")
+  endedAt    DateTime?              @map("ended_at")
+  status     CycleCountWindowStatus @default(ACTIVE)
+  notes      String?
+
+  branch     Branch                       @relation(fields: [branchId], references: [id])
+  exceptions CycleCountWindowException[]
+  records    CycleCountRecord[]
+
+  @@map("cycle_count_window")
+}
+
+// G-08's named-reasoned Supervisor exception, single-use — modeled on
+// TransactionPinToken's issued-then-consumed shape. A window's freeze is
+// branch-wide by default; this is the one sanctioned way through it for a
+// specific, justified document.
+model CycleCountWindowException {
+  id                     String    @id @default(uuid())
+  cycleCountWindowId     String    @map("cycle_count_window_id")
+  grantedBy              String    @map("granted_by")
+  reason                 String
+  documentType           String    @map("document_type") // "PICKING_LIST" | "RECEIVING_REPORT"
+  grantedAt              DateTime  @default(now()) @map("granted_at")
+  expiresAt              DateTime  @map("expires_at")
+  consumedAt             DateTime? @map("consumed_at")
+  consumedForReferenceId String?   @map("consumed_for_reference_id")
+
+  cycleCountWindow CycleCountWindow @relation(fields: [cycleCountWindowId], references: [id])
+
+  @@map("cycle_count_window_exception")
+}
+
+// Mutex row, same lazy-upsert-then-FOR-UPDATE shape as StockReservationLock/
+// AdjustmentVelocityLock/ReturnQuantityLock/DamageReportDisposalLock —
+// without it, two Supervisors could concurrently declare a window for the
+// same branch, breaking "exactly one window governs a movement's
+// violation-check" (Phase 4 plan sec.2.2).
+model CycleCountWindowLock {
+  branchId String @id @map("branch_id")
+
+  @@map("cycle_count_window_lock")
+}
+
+// G-25 — rolling per-(branch, variant) "next due" cursor, not per-period
+// historical rows. No lock needed to generate these — @@unique catches a
+// duplicate-generation race (same reasoning as ScrapSaleRecord's 1:1 FK).
+enum CycleCountScheduleStatus {
+  ON_SCHEDULE
+  DUE
+  OVERDUE
+  MISSED
+}
+
+model CycleCountSchedule {
+  id                   String                   @id @default(uuid())
+  branchId             String                   @map("branch_id")
+  productVariantId     String                   @map("product_variant_id")
+  cycleCountClass      CycleCountClass          @map("cycle_count_class") // snapshot, refreshed each regeneration
+  lastCountedAt        DateTime?                @map("last_counted_at")
+  nextDueAt            DateTime                 @map("next_due_at")
+  consecutiveMisses    Int                      @default(0) @map("consecutive_misses")
+  forcedAuditorRecount Boolean                  @default(false) @map("forced_auditor_recount") // set true on 2nd consecutive miss (BPD 12.1.8)
+  status               CycleCountScheduleStatus @default(ON_SCHEDULE)
+  updatedAt            DateTime                 @updatedAt @map("updated_at")
+
+  branch  Branch             @relation(fields: [branchId], references: [id])
+  records CycleCountRecord[]
+
+  @@unique([branchId, productVariantId])
+  @@map("cycle_count_schedule")
+}
+
+// One per product+location being counted. The "don't let two open counts
+// exist for the same product+location" guarantee is a DB-level PARTIAL
+// unique index (added by hand in a follow-up migration, same as the
+// existing stock_ledger_one_opening_balance_per_product index — Prisma's
+// schema language can't express a WHERE clause on @@unique, so it's
+// deliberately absent here and unmanaged by `prisma migrate diff`), not a
+// FOR-UPDATE lock: this is a "don't allow a duplicate open row" constraint,
+// not a shared-aggregate computation, so a constraint alone is sufficient.
+enum CycleCountRecordStatus {
+  COUNTING
+  TIEBREAK_PENDING
+  RECOUNT_PENDING
+  VARIANCE_CONFIRMED
+  CLOSED_CLEAN
+}
+
+model CycleCountRecord {
+  id                   String                 @id @default(uuid())
+  cycleCountWindowId   String                 @map("cycle_count_window_id")
+  branchId             String                 @map("branch_id")
+  productVariantId     String                 @map("product_variant_id")
+  warehouseLocationId  String                 @map("warehouse_location_id")
+  cycleCountClass      CycleCountClass        @map("cycle_count_class") // snapshot
+  cycleCountScheduleId String?                @map("cycle_count_schedule_id") // links back, sets lastCountedAt on close
+  systemExpectedQty    Decimal?               @map("system_expected_qty") @db.Decimal(18, 4) // frozen ONLY at evaluation time, after both blind counts
+  decisiveCountedQty   Decimal?               @map("decisive_counted_qty") @db.Decimal(18, 4)
+  toleranceExceeded    Boolean?               @map("tolerance_exceeded")
+  status               CycleCountRecordStatus @default(COUNTING)
+  discrepancyCaseId    String?                @map("discrepancy_case_id")
+  createdAt            DateTime               @default(now()) @map("created_at")
+
+  branch             Branch              @relation(fields: [branchId], references: [id])
+  cycleCountWindow   CycleCountWindow    @relation(fields: [cycleCountWindowId], references: [id])
+  cycleCountSchedule CycleCountSchedule? @relation(fields: [cycleCountScheduleId], references: [id])
+  adjustmentRequests AdjustmentRequest[]
+
+  @@map("cycle_count_record")
+}
+
+// ── Phase 4 — Multi-Branch / Inter-Branch Transfer (MB-1..8, G-35) ───────
+enum InterBranchTransferStatus {
+  REQUESTED
+  SENDING_APPROVED
+  PICKING
+  STAGED
+  IN_TRANSIT
+  ARRIVED_PENDING_COUNT
+  RECEIVED_CLOSED
+  VARIANCE_DISPUTED
+  VOID
+}
+
+// Ownership: stock is debited from the sending branch's StockBalance at
+// TRANSFER_OUT and NOT credited to the receiving branch's until TRANSFER_IN
+// posts at confirmed arrival — there is no interim floating-ownership
+// state (Phase 4 plan sec.4.1). reserveStock (wholesale/reservation.ts) is
+// reused completely unmodified at request time, source-branch-scoped only
+// — the receiving branch never has anything to reserve against, since it
+// can never transact on in-transit stock (BPD sec.15.3).
+model InterBranchTransfer {
+  id                          String                     @id @default(uuid())
+  fromBranchId                String                     @map("from_branch_id")
+  toBranchId                  String                     @map("to_branch_id")
+  productVariantId            String                     @map("product_variant_id")
+  requestedQty                Decimal                    @map("requested_qty") @db.Decimal(18, 4)
+  requestedBy                 String                     @map("requested_by") // BRANCH_MANAGER+ at toBranch — this IS the receiving-branch approval (MB-4)
+  requestedAt                 DateTime                   @default(now()) @map("requested_at")
+  sendingApprovedBy           String?                    @map("sending_approved_by") // value-tiered via resolveRequiredApprover, transactionType TRANSFER_OUT
+  sendingApprovedAt           DateTime?                  @map("sending_approved_at")
+  checkedQty                  Decimal?                   @map("checked_qty") @db.Decimal(18, 4) // blind TRANSFER_CHECK recount — this, not requestedQty, is what actually dispatches
+  status                      InterBranchTransferStatus  @default(REQUESTED)
+  gateLogEntryOutId           String?                    @map("gate_log_entry_out_id")
+  documentNumberId            String?                    @unique @map("document_number_id") // "STN"
+  receivedQty                 Decimal?                   @map("received_qty") @db.Decimal(18, 4) // capped at blind-counted qty, may differ from requestedQty
+  transitEvidenceRequired     Boolean                    @default(false) @map("transit_evidence_required") // computed + frozen at sending-approval, value >= threshold
+  transitEvidenceConfirmedBy  String?                    @map("transit_evidence_confirmed_by") // AUDITOR only
+  transitEvidenceConfirmedAt  DateTime?                  @map("transit_evidence_confirmed_at")
+  discrepancyCaseId           String?                    @map("discrepancy_case_id") // owned by fromBranch per BR-090
+  createdAt                   DateTime                   @default(now()) @map("created_at")
+
+  fromBranch     Branch          @relation("TransferFromBranch", fields: [fromBranchId], references: [id])
+  toBranch       Branch          @relation("TransferToBranch", fields: [toBranchId], references: [id])
+  productVariant ProductVariant  @relation(fields: [productVariantId], references: [id])
+  documentNumber DocumentNumber? @relation(fields: [documentNumberId], references: [id])
+
+  @@map("inter_branch_transfer")
+}
+
+// ── Daily Exception Report delivery (G-28) ───────────────────────────────
+// Channel-agnostic by design: only "ON_DEMAND_PULL" ships in this phase, but
+// `channel` is a free string and `generatedContentHash` exists specifically
+// so a future push channel (EMAIL/SMS) can be cross-verified against this
+// one's content without a schema change. One row per (businessDate, channel)
+// — a same-day re-pull upserts rather than duplicating.
+model DailyExceptionReportDelivery {
+  id                   String    @id @default(uuid())
+  businessDate         DateTime  @db.Date @map("business_date")
+  channel              String
+  dispatchedAt         DateTime? @map("dispatched_at")
+  deliveryStatus       String    @map("delivery_status") // SENT | FAILED | NOT_ATTEMPTED
+  generatedContentHash String    @map("generated_content_hash")
+  triggeredBy          String?   @map("triggered_by") // null = system-triggered; otherwise must be OWNER/AUDITOR
+
+  @@unique([businessDate, channel])
+  @@map("daily_exception_report_delivery")
 }

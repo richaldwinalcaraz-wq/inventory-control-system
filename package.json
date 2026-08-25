@@ -15,7 +15,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
-    "db:reset-demo": "tsx scripts/reset-demo-data.ts"
+    "db:reset-demo": "tsx scripts/reset-demo-data.ts",
+    "db:test:setup": "tsx scripts/setup-test-db.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -23,7 +26,10 @@
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "@prisma/client": "6.2.1",
+    "@react-pdf/renderer": "^4.6.1",
     "bcryptjs": "2.4.3",
+    "csv-stringify": "^6.8.3",
+    "exceljs": "^4.4.0",
     "next": "16.3.0",
     "next-auth": "5.0.0-beta.32",
     "react": "19.1.0",
@@ -36,13 +42,15 @@
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",
     "autoprefixer": "10.4.20",
+    "dotenv": "^17.4.2",
     "eslint": "9.39.5",
     "eslint-config-next": "16.3.0",
     "postcss": "8.5.23",
     "prisma": "6.2.1",
     "tailwindcss": "3.4.17",
     "tsx": "4.23.12",
-    "typescript": "5.7.3"
+    "typescript": "5.7.3",
+    "vitest": "^4.1.11"
   },
   "allowScripts": {
     "@prisma/client@6.2.1": true,

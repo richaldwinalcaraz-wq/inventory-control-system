@@ -3,8 +3,10 @@
  * do not treat the RolePermission rows here as the final matrix; reconcile
  * against business-process-design.md sec.4.2 before Phase 1 sign-off.
  */
+import { randomUUID, createHash } from "node:crypto";
 import { PrismaClient, RoleName, PermissionEffect, WarehouseZone } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { postLedgerEntry } from "../src/server/domain/ledger/postLedgerEntry";
 
 const prisma = new PrismaClient();
 
@@ -269,6 +271,138 @@ async function main() {
     { role: RoleName.OWNER, action: "disposal.certificate.void.create", effect: PermissionEffect.CREATE },
     { role: RoleName.AUDITOR, action: "disposal.aging-check.create", effect: PermissionEffect.CREATE },
     { role: RoleName.BRANCH_MANAGER, action: "disposal.aging-check.create", effect: PermissionEffect.CREATE },
+
+    // Cycle Counts (Phase 4, BPD sec.12.1, G-08). Declaring/closing the
+    // branch-wide freeze window is a Supervisor-or-above action — the same
+    // tier BPD already trusts with the physical count itself.
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.window.declare.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "cycle-count.window.declare.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "cycle-count.window.declare.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.window.close.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "cycle-count.window.close.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "cycle-count.window.close.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "cycle-count.window.violation-check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "cycle-count.window.violation-check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.window.exception.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "cycle-count.window.exception.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "cycle-count.window.exception.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "cycle-count.schedule.generate.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.schedule.generate.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "cycle-count.compliance.check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.compliance.check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.record.start.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "cycle-count.record.start.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "cycle-count.count.primary.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "cycle-count.count.primary.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_PICKER, action: "cycle-count.count.primary.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "cycle-count.count.secondary.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "cycle-count.count.secondary.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_PICKER, action: "cycle-count.count.secondary.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.count.tiebreak.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.evaluate.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "cycle-count.evaluate.create", effect: PermissionEffect.CREATE },
+    // Recount pool is deliberately as broad as primary/secondary counting —
+    // BPD 12.1's "immediate recount by a different person" means whoever's
+    // genuinely available and uninvolved, not just a Supervisor. SoD (not
+    // one of the 3 prior counters) is enforced in code, not by narrowing
+    // the role grant.
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "cycle-count.recount.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "cycle-count.recount.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_PICKER, action: "cycle-count.recount.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "cycle-count.recount.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "cycle-count.recount.create", effect: PermissionEffect.CREATE },
+
+    // Daily Reconciliation (Phase 4, BPD sec.14.3-14.4, G-26).
+    { role: RoleName.ENCODER, action: "reconciliation.prepare.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "reconciliation.bin-card.capture.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "reconciliation.bin-card.capture.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "reconciliation.bin-card.capture.create", effect: PermissionEffect.CREATE },
+    // Review pool is deliberately broad, not Supervisor-only — G-26's own
+    // rationale is "find someone available who wasn't involved," and BPD
+    // explicitly allows small-branch reality to force an ineligible
+    // reviewer rather than have no reviewer at all. Eligibility (not RBAC)
+    // is what enforces SoD here, same reasoning as cycle-count recount.
+    { role: RoleName.ENCODER, action: "reconciliation.review.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "reconciliation.review.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "reconciliation.review.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "reconciliation.review.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "reconciliation.review.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "reconciliation.review.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "reconciliation.sign-off.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "reconciliation.sign-off.create", effect: PermissionEffect.CREATE },
+
+    // Multi-Branch / Inter-Branch Transfer (Phase 4, MB-1..8, G-35). The
+    // request itself IS the receiving-branch approval (MB-4) — Branch
+    // Manager+ only, no separate second gate.
+    { role: RoleName.BRANCH_MANAGER, action: "multibranch.transfer.request.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "multibranch.transfer.request.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "multibranch.transfer.approve-sending.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "multibranch.transfer.approve-sending.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_PICKER, action: "multibranch.transfer.pick.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "multibranch.transfer.check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_SUPERVISOR, action: "multibranch.transfer.dispatch.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.ENCODER, action: "multibranch.transfer.dispatch.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_RECEIVER, action: "multibranch.transfer.receive.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.WAREHOUSE_CHECKER, action: "multibranch.transfer.receive-check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "multibranch.transfer.confirm-evidence.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.ENCODER, action: "multibranch.transfer.close.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.AUDITOR, action: "multibranch.transfer.overdue-check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.BRANCH_MANAGER, action: "multibranch.transfer.overdue-check.create", effect: PermissionEffect.CREATE },
+
+    // Account deactivation cascade (Phase 4, G-31).
+    { role: RoleName.AUDITOR, action: "discrepancy.deactivated-users-check.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "discrepancy.deactivated-users-check.create", effect: PermissionEffect.CREATE },
+
+    // Cross-branch stock visibility, read-only (Phase 4, MB-7).
+    { role: RoleName.BRANCH_MANAGER, action: "multibranch.stock.view-other-branch", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "multibranch.stock.view-other-branch", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "multibranch.stock.view-other-branch", effect: PermissionEffect.VIEW },
+
+    // Daily Exception Report (Phase 4, G-28) — deliberately never granted to
+    // BRANCH_MANAGER: BPD requires this be un-suppressible by any branch role.
+    { role: RoleName.OWNER, action: "reporting.daily-exception.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.daily-exception.view", effect: PermissionEffect.VIEW },
+
+    // Reporting suite (Phase 4 step 17) — same viewer pool as every existing
+    // report page (BRANCH_MANAGER/AUDITOR/OWNER), now RBAC-enforced instead
+    // of each page hardcoding its own role set.
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.shrinkage-rate.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.shrinkage-rate.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.shrinkage-rate.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.cycle-count-compliance.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.cycle-count-compliance.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.cycle-count-compliance.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.quarantine-disposal-aging.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.quarantine-disposal-aging.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.quarantine-disposal-aging.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.damage-vs-shrinkage.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.damage-vs-shrinkage.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.damage-vs-shrinkage.view", effect: PermissionEffect.VIEW },
+
+    // Low stock / out of stock alerts (BPD sec.14.5 — audience is explicitly
+    // Br. Manager + Owner only, narrower than the usual reporting.* trio).
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.low-stock.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.low-stock.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.low-stock.manage", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.low-stock.manage", effect: PermissionEffect.VIEW },
+
+    // Daily Stock Movement Summary (BPD sec.14.5).
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.daily-stock-movement.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.daily-stock-movement.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.daily-stock-movement.view", effect: PermissionEffect.VIEW },
+
+    // Weekly/monthly analytics (BPD sec.14.6).
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.variance-analysis.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.variance-analysis.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.variance-analysis.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.BRANCH_MANAGER, action: "reporting.trend-review.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.AUDITOR, action: "reporting.trend-review.view", effect: PermissionEffect.VIEW },
+    { role: RoleName.OWNER, action: "reporting.trend-review.view", effect: PermissionEffect.VIEW },
+
+    // Catalog management — new SKUs, not stock movement (that stays gated
+    // behind Receiving/Adjustments as normal).
+    { role: RoleName.BRANCH_MANAGER, action: "inventory.product.create", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "inventory.product.create", effect: PermissionEffect.CREATE },
   ];
 
   for (const p of permissions) {
@@ -338,6 +472,7 @@ async function main() {
     },
   ];
 
+  const seededVariants: Array<{ id: string; sellingPrice: number }> = [];
   for (const dp of demoProducts) {
     const product = await prisma.product.upsert({
       where: { id: dp.id },
@@ -375,6 +510,7 @@ async function main() {
         effectiveFrom: new Date(),
       },
     });
+    seededVariants.push({ id: variant.id, sellingPrice: dp.sellingPrice });
   }
 
   // Opening booklet ranges for controlled document types at the seeded
@@ -387,6 +523,7 @@ async function main() {
     { id: "seed-booklet-dr-ilo-2026", documentType: "DR" }, // Wholesale Delivery Receipt (Phase 2)
     { id: "seed-booklet-ra-ilo-2026", documentType: "RA" }, // Customer Return Authorization (Phase 3)
     { id: "seed-booklet-dc-ilo-2026", documentType: "DC" }, // Disposal Certificate (Phase 3)
+    { id: "seed-booklet-stn-ilo-2026", documentType: "STN" }, // Stock Transfer Note (Phase 4) — also extended to CEB/MNL below via existingBookletDocTypes
   ];
   for (const b of booklets) {
     await prisma.documentBookletRegistry.upsert({
@@ -510,6 +647,24 @@ async function main() {
       maxValue: null,
       requiredApproverRole: RoleName.OWNER,
     },
+    // Phase 4 — Inter-Branch Transfer sending-branch approval (MB-4). Same
+    // recommended-default tier structure as RECEIVING/ADJUSTMENT — BPD
+    // places the transit-loss risk on the sending branch (BR-089/BR-090),
+    // the same reasoning that already routes those two through this table.
+    {
+      id: "seed-threshold-transfer-out-tier1",
+      transactionType: "TRANSFER_OUT",
+      minValue: 0,
+      maxValue: 10000,
+      requiredApproverRole: RoleName.BRANCH_MANAGER,
+    },
+    {
+      id: "seed-threshold-transfer-out-tier2",
+      transactionType: "TRANSFER_OUT",
+      minValue: 10000.01,
+      maxValue: null,
+      requiredApproverRole: RoleName.OWNER,
+    },
   ];
   for (const t of approvalThresholds) {
     await prisma.approvalThreshold.upsert({
@@ -525,6 +680,116 @@ async function main() {
         isPlaceholder: true,
       },
     });
+  }
+
+  // Phase 4 — additional dev/test branches (build order step 2). Only "ILO"
+  // existed before this; InterBranchTransfer needs at least one more real
+  // branch, with its own warehouse/locations/opening stock, to be verified
+  // end-to-end against a running instance rather than just unit-level.
+  // branch_manager stays a single shared account (matches the existing
+  // one-user-per-role convention) but is additionally granted BRANCH_MANAGER
+  // via UserBranchRole at each new branch, so resolveBranchManager(branchId)
+  // — which auto-assigns DiscrepancyCase.assignedTo for transfer variances,
+  // reconciliation escalations, etc. — resolves correctly at every branch,
+  // not just ILO. RBAC itself is role-only (assertPermission never checks
+  // branch membership), so no other per-branch user duplication is needed.
+  const branchManagerUser = await prisma.user.findUniqueOrThrow({ where: { username: "branch_manager" } });
+
+  const additionalBranches: Array<{ code: string; name: string }> = [
+    { code: "CEB", name: "Cebu Branch" },
+    { code: "MNL", name: "Manila Branch" },
+  ];
+
+  const existingBookletDocTypes = booklets.map((b) => b.documentType);
+  const OPENING_STOCK_QTY = 500; // seed-only convenience quantity, base units (PC)
+
+  for (const ab of additionalBranches) {
+    const newBranch = await prisma.branch.upsert({
+      where: { code: ab.code },
+      update: {},
+      create: { code: ab.code, name: ab.name, status: "ACTIVE" },
+    });
+
+    const newWarehouse = await prisma.warehouse.upsert({
+      where: { branchId_code: { branchId: newBranch.id, code: "WH1" } },
+      update: {},
+      create: { branchId: newBranch.id, code: "WH1", name: "Main Warehouse" },
+    });
+
+    const newLocations = await Promise.all(
+      zones.map((zone) =>
+        prisma.warehouseLocation.upsert({
+          where: { warehouseId_code: { warehouseId: newWarehouse.id, code: zone } },
+          update: {},
+          create: { warehouseId: newWarehouse.id, zone, code: zone, name: `${zone} area` },
+        }),
+      ),
+    );
+    const storageLocation = newLocations.find((l) => l.zone === "STORAGE");
+    if (!storageLocation) throw new Error(`Seed: no STORAGE location created for branch ${ab.code}`);
+
+    for (const docType of existingBookletDocTypes) {
+      await prisma.documentBookletRegistry.upsert({
+        where: { id: `seed-booklet-${docType.toLowerCase()}-${ab.code.toLowerCase()}-2026` },
+        update: {},
+        create: {
+          id: `seed-booklet-${docType.toLowerCase()}-${ab.code.toLowerCase()}-2026`,
+          branchId: newBranch.id,
+          documentType: docType,
+          rangeStart: 1,
+          rangeEnd: 999,
+          registeredBy: owner.id,
+        },
+      });
+    }
+
+    await prisma.userBranchRole.upsert({
+      where: {
+        userId_branchId_role: { userId: branchManagerUser.id, branchId: newBranch.id, role: RoleName.BRANCH_MANAGER },
+      },
+      update: {},
+      create: {
+        userId: branchManagerUser.id,
+        branchId: newBranch.id,
+        role: RoleName.BRANCH_MANAGER,
+        grantedBy: owner.id,
+      },
+    });
+
+    // Opening stock, posted as a real OPENING_BALANCE ledger entry (not a
+    // raw StockBalance upsert) so it carries a genuine hash-chained audit
+    // trail — the movement type exists precisely for this ("built now;
+    // posting path intentionally left unrouted in the UI until Phase 5
+    // cutover", schema.prisma) and a seed script is exactly the sanctioned
+    // way to use it before that UI exists.
+    for (const sv of seededVariants) {
+      const documentNumber = `OPENBAL-${ab.code}-${sv.id}`;
+      const unitCostAtMovement = Math.round(sv.sellingPrice * 0.6 * 100) / 100; // seed-only approximate cost basis
+      const payload = { branchId: newBranch.id, productVariantId: sv.id, quantity: OPENING_STOCK_QTY };
+      await postLedgerEntry(prisma, {
+        idempotency: {
+          documentType: "OPENBAL",
+          documentNumber,
+          branchCode: newBranch.code,
+          requestPayloadHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+        },
+        branchId: newBranch.id,
+        productVariantId: sv.id,
+        warehouseLocationId: storageLocation.id,
+        quantityDeltaBase: OPENING_STOCK_QTY,
+        movementType: "OPENING_BALANCE",
+        unitCostAtMovement,
+        referenceType: "SeedOpeningBalance",
+        referenceId: randomUUID(),
+        documentNumber,
+        performedBy: owner.id,
+        approvedBy: owner.id,
+      });
+    }
+
+    console.log(
+      `Seeded additional branch "${newBranch.code}" (${newBranch.name}) with ${newLocations.length} warehouse locations, ${existingBookletDocTypes.length} document booklets, and opening stock for ${seededVariants.length} product variants.`,
+    );
   }
 
   console.log(
