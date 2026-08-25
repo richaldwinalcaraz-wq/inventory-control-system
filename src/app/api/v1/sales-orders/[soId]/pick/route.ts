@@ -7,10 +7,11 @@ import { prisma } from "@/lib/prisma";
 
 const bodySchema = z.object({
   lines: z.array(z.object({ salesOrderLineId: z.string().min(1), pickedQty: z.number().nonnegative() })).min(1),
+  cycleCountExceptionTokenId: z.string().optional(),
 });
 
 export const POST = apiHandler<{ soId: string }>(async (request, { soId }) => {
   const actor = await getCurrentActor();
   const body = await parseBody(request, bodySchema);
-  return pickSalesOrder(prisma, { salesOrderId: soId, actorUserId: actor.userId, actorRole: actor.role, lines: body.lines });
+  return pickSalesOrder(prisma, { salesOrderId: soId, actorUserId: actor.userId, actorRole: actor.role, ...body });
 });

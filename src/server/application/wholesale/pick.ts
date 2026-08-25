@@ -1,6 +1,7 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { reservationsStillActive } from "../../domain/wholesale/reservation";
+import { assertBranchMovementAllowed } from "../../domain/cycleCount/branchLock";
 import { SalesOrderNotFoundError, InvalidSalesOrderStateError } from "./order";
 
 export class ReservationExpiredError extends Error {}
@@ -10,6 +11,8 @@ export interface PickSalesOrderParams {
   actorRole: RoleName;
   salesOrderId: string;
   lines: Array<{ salesOrderLineId: string; pickedQty: number }>;
+  /** G-08: consumes a CycleCountWindowException, required only while the branch has an ACTIVE CycleCountWindow. */
+  cycleCountExceptionTokenId?: string;
 }
 
 /**
@@ -33,6 +36,18 @@ export async function pickSalesOrder(prisma: PrismaClient, params: PickSalesOrde
   }
 
   return prisma.$transaction(async (tx) => {
+    const { exceptionUsed } = await assertBranchMovementAllowed(tx, {
+      branchId: order.branchId,
+      documentType: "PICKING_LIST",
+      exceptionTokenId: params.cycleCountExceptionTokenId,
+    });
+    if (exceptionUsed) {
+      await tx.cycleCountWindowException.update({
+        where: { id: exceptionUsed },
+        data: { consumedForReferenceId: order.id },
+      });
+    }
+
     const stillActive = await reservationsStillActive(tx, { referenceType: "SalesOrder", referenceId: order.id });
     if (!stillActive) {
       throw new ReservationExpiredError(

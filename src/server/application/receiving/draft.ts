@@ -1,5 +1,6 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
+import { assertBranchMovementAllowed } from "../../domain/cycleCount/branchLock";
 
 export class ReceivingReportNotFoundError extends Error {}
 export class InvalidReceivingReportStateError extends Error {}
@@ -13,30 +14,49 @@ export interface DraftReceivingReportParams {
   poReference?: string;
   gateLogEntryId?: string;
   lines: Array<{ productVariantId: string; expectedQty?: number; unitCost: number }>;
+  /** G-08: consumes a CycleCountWindowException, required only while the branch has an ACTIVE CycleCountWindow. */
+  cycleCountExceptionTokenId?: string;
 }
 
 /** Steps 2–3 — unloading + document verification, captured as one draft RR. */
 export async function draftReceivingReport(prisma: PrismaClient, params: DraftReceivingReportParams) {
   await assertPermission(prisma, { role: params.actorRole, action: "receiving.draft.create" });
 
-  return prisma.receivingReport.create({
-    data: {
+  return prisma.$transaction(async (tx) => {
+    const { exceptionUsed } = await assertBranchMovementAllowed(tx, {
       branchId: params.branchId,
-      supplierId: params.supplierId,
-      drNumber: params.drNumber,
-      poReference: params.poReference,
-      gateLogEntryId: params.gateLogEntryId,
-      receivedBy: params.actorUserId,
-      status: "DRAFT",
-      lines: {
-        create: params.lines.map((l) => ({
-          productVariantId: l.productVariantId,
-          expectedQty: l.expectedQty,
-          unitCost: l.unitCost,
-        })),
+      documentType: "RECEIVING_REPORT",
+      exceptionTokenId: params.cycleCountExceptionTokenId,
+    });
+
+    const rr = await tx.receivingReport.create({
+      data: {
+        branchId: params.branchId,
+        supplierId: params.supplierId,
+        drNumber: params.drNumber,
+        poReference: params.poReference,
+        gateLogEntryId: params.gateLogEntryId,
+        receivedBy: params.actorUserId,
+        status: "DRAFT",
+        lines: {
+          create: params.lines.map((l) => ({
+            productVariantId: l.productVariantId,
+            expectedQty: l.expectedQty,
+            unitCost: l.unitCost,
+          })),
+        },
       },
-    },
-    include: { lines: true },
+      include: { lines: true },
+    });
+
+    if (exceptionUsed) {
+      await tx.cycleCountWindowException.update({
+        where: { id: exceptionUsed },
+        data: { consumedForReferenceId: rr.id },
+      });
+    }
+
+    return rr;
   });
 }
 

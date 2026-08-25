@@ -36,6 +36,8 @@ export interface RequestAdjustmentParams {
   quantityDelta: number;
   reconciliationNotes: string;
   damageReportId?: string;
+  /** Phase 4: paper-trail link back to the CycleCountRecord this write-off resolves — reuses ADJ_01/ADJ_02, never a dedicated reason code. */
+  cycleCountRecordId?: string;
 }
 
 /**
@@ -104,6 +106,7 @@ export async function requestAdjustment(prisma: PrismaClient, params: RequestAdj
         status: "PENDING_INVESTIGATION",
         requestedBy: params.actorUserId,
         damageReportId: params.damageReportId,
+        cycleCountRecordId: params.cycleCountRecordId,
       },
     });
 

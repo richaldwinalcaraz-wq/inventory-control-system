@@ -14,6 +14,7 @@ const bodySchema = z.object({
   quantityDelta: z.number().refine((n) => n !== 0, "quantityDelta must be non-zero"),
   reconciliationNotes: z.string().min(1),
   damageReportId: z.string().min(1).optional(),
+  cycleCountRecordId: z.string().min(1).optional(),
 });
 
 export const POST = apiHandler(async (request) => {

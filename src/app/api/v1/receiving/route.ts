@@ -10,6 +10,7 @@ const bodySchema = z.object({
   drNumber: z.string().min(1),
   poReference: z.string().optional(),
   gateLogEntryId: z.string().optional(),
+  cycleCountExceptionTokenId: z.string().optional(),
   lines: z
     .array(
       z.object({

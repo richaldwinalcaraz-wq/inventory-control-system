@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient, RoleName } from "@prisma/client";
+import { endOfDayManila } from "../time/businessDate";
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
@@ -50,20 +51,4 @@ export async function getActiveElevation(db: Db, userId: string) {
     where: { grantedTo: userId, revokedAt: null, expiresAt: { gt: new Date() } },
     orderBy: { grantedAt: "desc" },
   });
-}
-
-function endOfDayManila(now: Date = new Date()): Date {
-  // Asia/Manila is UTC+8 with no DST — a fixed offset is safe here.
-  const manilaOffsetMs = 8 * 60 * 60 * 1000;
-  const manilaNow = new Date(now.getTime() + manilaOffsetMs);
-  const manilaMidnightNext = Date.UTC(
-    manilaNow.getUTCFullYear(),
-    manilaNow.getUTCMonth(),
-    manilaNow.getUTCDate() + 1,
-    0,
-    0,
-    0,
-    0,
-  );
-  return new Date(manilaMidnightNext - manilaOffsetMs);
 }

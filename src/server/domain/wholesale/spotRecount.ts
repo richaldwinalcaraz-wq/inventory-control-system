@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { startOfDayManila } from "../time/businessDate";
 
 export class NoEligibleSpotRecountWitnessError extends Error {}
 
@@ -31,7 +32,7 @@ export async function assertEligibleSpotRecountWitness(
   params: { branchId: string; candidateUserId: string; now?: Date },
 ): Promise<void> {
   const now = params.now ?? new Date();
-  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const startOfDay = startOfDayManila(now);
 
   const conflict = await tx.salesOrder.findFirst({
     where: {
