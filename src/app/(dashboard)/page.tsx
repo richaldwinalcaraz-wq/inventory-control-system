@@ -10,7 +10,6 @@ import {
   PackageIcon,
   WarningIcon,
   CurrencyCircleDollarIcon,
-  MagnifyingGlassIcon,
   ArrowUUpLeftIcon,
   FireIcon,
 } from "@phosphor-icons/react/dist/ssr";
@@ -20,6 +19,8 @@ import { StatCard } from "@/components/ui/StatCard";
 import { Card } from "@/components/ui/Card";
 
 const QUICK_LINKS = [
+  { href: "/inventory", label: "Inventory", description: "Current stock on hand, by product and branch.", icon: PackageIcon },
+  { href: "/inventory/low-stock", label: "Low Stock Alerts", description: "Products at or below their reorder point.", icon: WarningIcon },
   { href: "/gate/log-entry", label: "Gate Log", description: "Log a vehicle/goods entry or exit (Step 1).", icon: ClipboardTextIcon },
   { href: "/receiving", label: "Receiving Reports", description: "Draft, count, inspect, approve, and post incoming deliveries.", icon: TruckIcon },
   { href: "/retail", label: "Retail Sales", description: "Ring up a counter sale at list price and post it to the ledger.", icon: StorefrontIcon },
@@ -28,7 +29,6 @@ const QUICK_LINKS = [
   { href: "/wholesale", label: "Wholesale Orders", description: "Reserve, pick, blind-check, authorize, and release orders.", icon: StackIcon },
   { href: "/returns", label: "Customer Returns", description: "Issue a Return Authorization and log its blind double-count.", icon: ArrowUUpLeftIcon },
   { href: "/disposal", label: "Damage & Disposal", description: "Report damage, create disposal certificates, and post their outcomes.", icon: FireIcon },
-  { href: "/discrepancy-cases", label: "Discrepancy Cases", description: "Assign an owner and resolve open investigations.", icon: MagnifyingGlassIcon },
 ] as const;
 
 export default async function OverviewPage() {

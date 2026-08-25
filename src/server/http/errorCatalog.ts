@@ -114,9 +114,67 @@ import {
   QuoteEvidenceRequiredError,
 } from "../application/disposal/scrapSale";
 import { CannotVoidPostedDisposalCertificateError, VoidReasonRequiredError } from "../application/disposal/void";
-import { NoBranchManagerConfiguredError } from "../application/discrepancy/aging";
+import { NoBranchManagerConfiguredError, NoOwnerConfiguredError } from "../application/discrepancy/aging";
+import {
+  CycleCountWindowAlreadyActiveError,
+  CycleCountWindowNotFoundError,
+  CycleCountWindowNotActiveError,
+  ExceptionReasonRequiredError,
+} from "../application/cycleCount/window";
+import {
+  BranchLockedForCycleCountError,
+  InvalidOrExpiredCycleCountWindowExceptionError,
+} from "../domain/cycleCount/branchLock";
+import { NoActiveCycleCountWindowError, CycleCountRecordAlreadyOpenError } from "../application/cycleCount/startCount";
+import {
+  CycleCountRecordNotFoundError,
+  InvalidCycleCountRecordStateError,
+  CycleCountSlipAlreadySubmittedError,
+  PrimaryCountMissingError,
+  SecondaryCounterMustNotBePrimaryError,
+  WitnessRequiredError as CycleCountWitnessRequiredError,
+  CollectorMustNotBeCounterError,
+} from "../application/cycleCount/submitCount";
+import { BothCountsRequiredError } from "../application/cycleCount/evaluate";
+import { RecounterMustDifferFromPriorCountersError } from "../application/cycleCount/recount";
+import { DailyReconciliationAlreadyPreparedError } from "../application/reconciliation/prepare";
+import {
+  DailyReconciliationLineNotFoundError,
+  AlreadySignedOffError as BinCardAlreadySignedOffError,
+  BinCardPhotoRequiredError,
+} from "../application/reconciliation/captureBinCard";
+import { BinCardNotYetCapturedError, LineAlreadyReviewedError } from "../application/reconciliation/reviewLine";
+import {
+  DailyReconciliationNotFoundError,
+  NotAllLinesReviewedError,
+  ReconciliationAlreadySignedOffError,
+} from "../application/reconciliation/signOff";
+import {
+  SameBranchTransferError,
+  InvalidTransferQuantityError,
+  InterBranchTransferNotFoundError,
+  InvalidInterBranchTransferStateError,
+} from "../application/transfer/request";
+import { SourceStorageLocationNotFoundError, WrongTransferApproverRoleError } from "../application/transfer/approveSending";
+import { TransferCountSlipAlreadySubmittedError } from "../application/transfer/pick";
+import { TransferCheckerMustNotBePickerError } from "../application/transfer/check";
+import {
+  TransferReceiveCountAlreadySubmittedError,
+  TransferReceiveCountMissingError,
+  TransferReceiveCheckerMustNotBeReceiverError,
+} from "../application/transfer/receiveCount";
+import { TransitEvidenceNotRequiredError, NoTransitEvidenceOnFileError } from "../application/transfer/confirmEvidence";
+import {
+  ReceiveCountRequiredError,
+  TransitEvidenceConfirmationRequiredError,
+  DestinationStorageLocationNotFoundError,
+  MissingDispatchLedgerRowError,
+} from "../application/transfer/close";
 import { UnauthenticatedError } from "./currentActor";
 import { InvalidRequestBodyError } from "./parseBody";
+import { InvalidBusinessDateError } from "./businessDate";
+import { UnknownReportIdError, UnsupportedExportFormatError } from "../application/reporting/export/registry";
+import { DuplicateSkuError } from "../application/inventory/createProduct";
 
 const CATALOG: Array<[new (...args: never[]) => Error, number, string]> = [
   [UnauthenticatedError, 401, "UNAUTHENTICATED"],
@@ -248,6 +306,54 @@ const CATALOG: Array<[new (...args: never[]) => Error, number, string]> = [
   [VoidReasonRequiredError, 422, "VOID_REASON_REQUIRED"],
   [NoBranchManagerConfiguredError, 422, "NO_BRANCH_MANAGER_CONFIGURED"],
   [VoidWithoutReturnReasonRequiredError, 422, "VOID_WITHOUT_RETURN_REASON_REQUIRED"],
+  [CycleCountWindowAlreadyActiveError, 409, "CYCLE_COUNT_WINDOW_ALREADY_ACTIVE"],
+  [CycleCountWindowNotFoundError, 404, "NOT_FOUND"],
+  [CycleCountWindowNotActiveError, 409, "CYCLE_COUNT_WINDOW_NOT_ACTIVE"],
+  [ExceptionReasonRequiredError, 422, "EXCEPTION_REASON_REQUIRED"],
+  [BranchLockedForCycleCountError, 423, "BRANCH_LOCKED_FOR_CYCLE_COUNT"],
+  [InvalidOrExpiredCycleCountWindowExceptionError, 422, "INVALID_OR_EXPIRED_EXCEPTION"],
+  [NoOwnerConfiguredError, 422, "NO_OWNER_CONFIGURED"],
+  [NoActiveCycleCountWindowError, 422, "NO_ACTIVE_CYCLE_COUNT_WINDOW"],
+  [CycleCountRecordAlreadyOpenError, 409, "CYCLE_COUNT_RECORD_ALREADY_OPEN"],
+  [CycleCountRecordNotFoundError, 404, "NOT_FOUND"],
+  [InvalidCycleCountRecordStateError, 409, "INVALID_STATE"],
+  [CycleCountSlipAlreadySubmittedError, 409, "ALREADY_SUBMITTED"],
+  [PrimaryCountMissingError, 422, "PRIMARY_COUNT_MISSING"],
+  [SecondaryCounterMustNotBePrimaryError, 403, "SOD_VIOLATION"],
+  [CycleCountWitnessRequiredError, 422, "WITNESS_REQUIRED"],
+  [CollectorMustNotBeCounterError, 403, "SOD_VIOLATION"],
+  [BothCountsRequiredError, 422, "BOTH_COUNTS_REQUIRED"],
+  [RecounterMustDifferFromPriorCountersError, 403, "SOD_VIOLATION"],
+  [DailyReconciliationAlreadyPreparedError, 409, "ALREADY_PREPARED"],
+  [DailyReconciliationLineNotFoundError, 404, "NOT_FOUND"],
+  [BinCardAlreadySignedOffError, 409, "ALREADY_SIGNED_OFF"],
+  [BinCardPhotoRequiredError, 422, "BIN_CARD_PHOTO_REQUIRED"],
+  [BinCardNotYetCapturedError, 422, "BIN_CARD_NOT_YET_CAPTURED"],
+  [LineAlreadyReviewedError, 409, "ALREADY_REVIEWED"],
+  [DailyReconciliationNotFoundError, 404, "NOT_FOUND"],
+  [NotAllLinesReviewedError, 422, "NOT_ALL_LINES_REVIEWED"],
+  [ReconciliationAlreadySignedOffError, 409, "ALREADY_SIGNED_OFF"],
+  [SameBranchTransferError, 400, "SAME_BRANCH_TRANSFER"],
+  [InvalidTransferQuantityError, 400, "INVALID_QUANTITY"],
+  [InterBranchTransferNotFoundError, 404, "NOT_FOUND"],
+  [InvalidInterBranchTransferStateError, 409, "INVALID_STATE"],
+  [SourceStorageLocationNotFoundError, 422, "WAREHOUSE_LOCATION_NOT_CONFIGURED"],
+  [WrongTransferApproverRoleError, 403, "WRONG_APPROVER_ROLE"],
+  [TransferCountSlipAlreadySubmittedError, 409, "ALREADY_SUBMITTED"],
+  [TransferCheckerMustNotBePickerError, 403, "SOD_VIOLATION"],
+  [TransferReceiveCountAlreadySubmittedError, 409, "ALREADY_SUBMITTED"],
+  [TransferReceiveCountMissingError, 422, "RECEIVE_COUNT_MISSING"],
+  [TransferReceiveCheckerMustNotBeReceiverError, 403, "SOD_VIOLATION"],
+  [TransitEvidenceNotRequiredError, 400, "TRANSIT_EVIDENCE_NOT_REQUIRED"],
+  [NoTransitEvidenceOnFileError, 422, "NO_TRANSIT_EVIDENCE_ON_FILE"],
+  [ReceiveCountRequiredError, 422, "RECEIVE_COUNT_REQUIRED"],
+  [TransitEvidenceConfirmationRequiredError, 422, "TRANSIT_EVIDENCE_CONFIRMATION_REQUIRED"],
+  [DestinationStorageLocationNotFoundError, 422, "WAREHOUSE_LOCATION_NOT_CONFIGURED"],
+  [MissingDispatchLedgerRowError, 409, "MISSING_DISPATCH_LEDGER_ROW"],
+  [InvalidBusinessDateError, 400, "INVALID_BUSINESS_DATE"],
+  [UnknownReportIdError, 404, "UNKNOWN_REPORT_ID"],
+  [UnsupportedExportFormatError, 400, "UNSUPPORTED_EXPORT_FORMAT"],
+  [DuplicateSkuError, 409, "DUPLICATE_SKU"],
 ];
 
 /** Falls back to 500/INTERNAL_ERROR for anything not in the catalog — never silently 200s an error. */
