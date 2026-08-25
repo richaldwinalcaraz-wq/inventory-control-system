@@ -429,3 +429,146 @@ All future modules integrate through this event stream and versioned internal AP
 ## Open Questions for the Client
 
 > **Superseded by the consolidated decision list.** The four questions previously here are a subset of the fuller list already tracked in `business-process-design.md` Appendix E (12 open questions) and distilled for the client in `executive-summary.html` as the "six decisions we need from you" (Auditor identity, approval peso-thresholds, one stock pool vs. two, delivery dispute-window length, which products get weekly vs. monthly cycle counts, and branch count/timing). Answering those six resolves this section's four questions as a subset — question 2 (FEFO scope) is the one item not already covered and should be confirmed alongside the six.
+
+---
+
+## 16. Implementation Note — Inventory, Alerts & Reporting UI (2026-08-20)
+
+BPD sec.14.5/14.6 promised six daily reports and a weekly/monthly analytics
+rhythm; `five-phase-build-plan.md`'s Phase 4 line item promised "the full
+reporting and dashboard suite." The backend for several of these (shrinkage
+rate, cycle-count compliance, CSV/Excel/PDF export) existed and was correct
+but had no UI page; several others (an inventory stock-level browse screen,
+low-stock/out-of-stock alerts, daily stock movement, variance analysis,
+damage/return trend, slow-stock review) had neither backend nor UI. Closed
+in this pass:
+
+- **New pages** (all under `src/app/(dashboard)/`): `inventory` (stock
+  browse, reuses the existing `getConsolidatedBranchStockView`),
+  `inventory/low-stock` + `inventory/reorder-points` (alerts + settings),
+  `reports/daily-exception`, `reports/cycle-count-compliance`,
+  `reports/shrinkage-rate` (wiring up existing backends), and new backends
+  + pages for `reports/daily-stock-movement`, `reports/variance-analysis`,
+  `reports/trend-review`. All follow the existing report-page pattern
+  (async server component, `getAppSession`, `assertPermission`-backed
+  domain call, redirect-to-`/` on `PermissionDeniedError`).
+- **Schema change**: `ProductVariant.reorderPoint Decimal?` (nullable —
+  unconfigured, not zero) — a company-wide per-product threshold, editable
+  by Branch Manager/Owner on the new Reorder Points settings page, per the
+  BPD's own "set reorder points on the top 50 products" recommendation.
+  Migration `20260820093538_add_product_variant_reorder_point`.
+- **New RBAC actions** (seeded, `reporting.*` convention):
+  `reporting.low-stock.view`/`.manage` (Branch Manager, Owner — narrower
+  audience, matches BPD sec.14.5's stated table), `reporting.daily-stock-movement.view`,
+  `reporting.variance-analysis.view`, `reporting.trend-review.view` (all
+  three: Branch Manager, Auditor, Owner — the usual `reporting.*` trio).
+- **Deferred, explicitly out of scope for this pass**: supplier scorecard
+  (BPD sec.14.6) has no supplier-performance data model yet; Pending
+  Encoding List and Form Accountability Sheet (BPD sec.14.5) remain
+  unbuilt. Both are real gaps, tracked here rather than silently dropped.
+
+## 17. Bug Fix — Ledger Hash-Chain Concurrency (2026-08-24)
+
+A concurrency stress test (50+ simultaneous `postLedgerEntry` calls) found
+that the stock ledger's chain-tail lock did not actually serialize
+concurrent posters: under real concurrent load, most postings failed with
+a `sequence_no` unique-constraint violation instead of being safely
+queued. Root cause: the lock acquired `SELECT ... FROM stock_ledger ORDER
+BY sequence_no DESC LIMIT 1 FOR UPDATE` — in Postgres, a blocked `FOR
+UPDATE` waiter re-locks the *exact row it originally identified*, not
+whatever is now the true tail, so every waiter unblocks holding the same
+stale `prevHash`/`sequenceNo` and collides on insert. This is a
+well-known Postgres anti-pattern; every other lock in this codebase
+(cycle-count window lock, disposal lock, return-quantity lock, stock
+reservation lock, adjustment-velocity lock, document-number sequence) was
+already using the correct pattern — a stable, pre-identified key row — so
+this was an isolated gap, not a systemic one.
+
+**Fix**: a new singleton pointer row, `StockLedgerChainTail` (id always
+1), tracking `sequenceNo`/`rowHash` of the current tail. Every poster
+locks this *same physical row* every time, so a blocked waiter correctly
+re-reads the fresh, just-committed value once unblocked. The row is
+lazily seeded on first use, deriving its starting point from
+`stock_ledger`'s own current tail (`COALESCE(MAX(sequence_no), 0)`) rather
+than assuming an empty chain — a database with existing ledger history
+(true of every real environment past initial install) would otherwise
+desync the pointer from reality and reproduce the same collision cascade.
+Migration `20260824094108_add_stock_ledger_chain_tail`.
+
+Verified: 200 concurrent postings across 4 products with mixed
+positive/negative deltas — 0 failures, all sequence numbers unique, hash
+chain valid, `StockBalance` exactly correct; the full 126-test fraud-audit
+regression suite still passes at its baseline (101 real, 25 documented
+gaps) against a pre-populated test database.
+
+## 18. Feature Removal + Catalog Creation (2026-08-24)
+
+Per explicit client request, three features were reviewed for removal;
+each was scoped individually rather than deleted uniformly, since their
+blast radius differed:
+
+- **Discrepancy Cases — fully deleted** (client's explicit choice, after
+  being told ~14 fraud-control workflows still auto-create rows there and
+  will now dead-end silently instead of surfacing for review). Removed
+  `src/app/(dashboard)/discrepancy-cases/`, `src/app/api/v1/discrepancy-cases/`,
+  and the nav/Sidebar/Overview quick-link entries. `DiscrepancyCase` has no
+  FK to any other model, so the underlying writes (still made by those ~14
+  workflows) succeed as before — they just have no UI to be reviewed from
+  anymore. Flagged as a real operational gap, not silently dropped.
+
+  **Correction (2026-08-25):** the deleted API tree also removed the
+  *only* triggers for three on-demand fraud/compliance checks —
+  `checkQuarantineDisposalAging` (G-09), `checkOverdueTransfers` (BPD
+  §15.3 / BR-090), and `checkDeactivatedUserOpenItems` (G-31) — which
+  briefly meant these could no longer run at all, not just "run with no
+  review UI." Restored via a new standalone page,
+  `/reports/integrity-checks` (`reports/integrity-checks/page.tsx` +
+  `RunCheckButton.tsx`), with one button per check posting to
+  `POST /api/v1/integrity-checks/{quarantine-disposal-aging,overdue-transfers,deactivated-users}`.
+  Deliberately does not resurrect Discrepancy Cases' browse/close UI —
+  each check still just opens/reassigns `DiscrepancyCase` rows the same
+  way it always did; there is simply no case list to browse anymore
+  (client's decision, unchanged). RBAC unchanged (same three actions as
+  before: `disposal.aging-check.create`, `multibranch.transfer.overdue-check.create`,
+  `discrepancy.deactivated-users-check.create`). Verified over HTTP as
+  Auditor: all three run, results render inline, re-running is idempotent
+  (no duplicate cases), Encoder gets 403. The overdue-transfer check
+  immediately flagged two real `InterBranchTransfer` rows in the dev
+  database that had been silently overdue the whole time the trigger was
+  missing.
+- **Counter Transfer — explicitly left untouched.** This is the only
+  mechanism that stocks the COUNTER zone for Retail Sales; removing it
+  would have broken retail checkout entirely. Client confirmed after this
+  was surfaced.
+- **Cycle-Count Compliance — page only, deleted.** The domain function
+  (`getCycleCountComplianceKpi`), its export-registry entry, and its RBAC
+  row were deliberately kept: the fraud-audit regression suite
+  (`g25-cycle-count-compliance.test.ts`) calls the function directly, and
+  it's inert infrastructure with the page gone (no nav entry, no route).
+
+**New: manual product/catalog creation** (`/inventory/new`,
+`POST /api/v1/inventory/products`, `src/server/application/inventory/createProduct.ts`,
+RBAC action `inventory.product.create` — Branch Manager, Owner). Deliberately
+scoped to catalog metadata only (name, SKU, unit, category, price, cycle-count
+class) — it never touches stock or the ledger. A new product starts at zero
+on-hand and gets its first real quantity through the normal audited paths
+(Receiving for a delivery, Adjustments for a found/corrected count), the
+same as the client chose when asked how this should be gated. `OPENING_BALANCE`
+was explicitly ruled out as the posting mechanism — it's a one-time,
+Owner-approval-gated lock reserved for the Phase 5 go-live physical count
+cutover, not routine new-SKU stocking.
+
+Bug found and fixed during verification: `getConsolidatedBranchStockView`
+(the function backing the Inventory browse page) only returns
+`StockBalance` rows with `quantityOnHand > 0` — it was built for the MB-7
+"check another branch's stock before requesting a transfer" report, which
+correctly has no reason to list zero-stock items. Reusing it as-is for the
+Inventory page meant a newly created product had no `StockBalance` row
+anywhere and simply never appeared — silently defeating the point of
+letting someone add it. Fixed by leaving that function's MB-7 semantics
+untouched (it's also used by a separate export/report) and instead having
+`/inventory/page.tsx` start from the full active `ProductVariant` catalog,
+left-merging in balances where they exist and defaulting to zero
+otherwise. Verified end-to-end over HTTP: product created as Branch
+Manager, appears in `/inventory` search at zero stock across all branches,
+rejected with 403 for Encoder, duplicate SKU rejected with 409.

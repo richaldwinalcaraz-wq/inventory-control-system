@@ -5,6 +5,301 @@ versioned, PDF-exported). This file is for future-Claude / future-you:
 session-to-session decisions, gotchas, and open threads that aren't obvious
 from reading the docs cold. Updated as a close-out step.
 
+## 2026-08-25 — close-out audit: integrity-checks restoration verified, user manual shipped, commit discipline STILL broken (6th flag)
+
+Verified against the repo directly, not trusted from the session's own summary.
+
+**Integrity Checks page — claims confirmed correct.** All three routes
+(`src/app/api/v1/integrity-checks/{quarantine-disposal-aging,overdue-transfers,
+deactivated-users}/route.ts`) delegate to the pre-existing, already-tested
+domain functions with no route-level RBAC (matches this codebase's established
+pattern — permission check lives in the application-layer function via
+`assertPermission`). Cross-checked all three `action` strings
+(`disposal.aging-check.create`, `multibranch.transfer.overdue-check.create`,
+`discrepancy.deactivated-users-check.create`) against `prisma/seed.ts` grants
+directly — exact match to what the session claimed, and confirmed these are
+Phase-4-era grants, not new rows invented today, so "RBAC unchanged" is
+literally true. Encoder is correctly excluded from all three (no seed row
+grants it any of the three actions) — the 403 claim is credible. Page-level
+gate (`page.tsx`) only checks session existence, not role — every logged-in
+user sees all three buttons regardless of permission, same pre-existing
+pattern already flagged for `/inventory`'s nav link (2026-08-24 entry below).
+Not a security hole (server-side `assertPermission` still enforces it, and
+the UI surfaces the resulting 403 as a real error rather than hiding it) but
+worth folding into that same nav/RBAC-visibility cleanup if it's ever done.
+
+**User manual — verified, not just skimmed.** `docs/Inventory-User-Manual.pdf`
+is a genuinely valid PDF (`%PDF-1.4` header, well-formed `xref`/`trailer`,
+419KB, opens to real content) — confirmed by reading the raw bytes, not just
+trusting the file size. Appendix A's role/permission table was spot-checked
+directly against `prisma/seed.ts` (not inferred from UI conditionals) for
+every claim that touches today's or yesterday's new features: "Add new
+product → Branch Manager, Owner" matches `inventory.product.create`; all
+three Integrity Check role claims match their respective seed rows exactly
+(including the asymmetry — aging/overdue-transfers are Branch Manager +
+Auditor, deactivated-users is Owner + Auditor, correctly NOT the same pair).
+Appendix B's "not yet available" list (Cycle Counts, Inter-Branch Transfer
+creation, Reconciliation, admin screens) matches what's actually missing from
+`src/app/(dashboard)/` — confirmed no page exists for any of them despite the
+domain/application code being present. This manual is accurate as of today's
+code state.
+
+**Full regression suite independently re-run by this audit (not trusted from
+the session's claim): 101 passed, 25 failed, 126 total — exact match.** The
+25 failures are all `[GAP]` canary tests that throw by design to keep a known
+gap visible in CI output (confirmed by reading several directly — e.g. G-32
+"no periodic re-verification of an ACTIVE conversion rate," G-35 "no
+transfer-volume-by-branch-pair report" — these are pre-existing, documented,
+unrelated to today's work). `npx tsc --noEmit` re-run independently — clean.
+`eslint.config.js`/`.eslintrc*` confirmed absent — the "lint broken on ESLint
+v9" claim is real and still unfixed (pre-existing, not introduced today).
+
+**Dev server was STILL running at close-out** (port 3000, PID active,
+confirmed via `netstat`) — same exact gap called out in the 2026-08-24 entry
+below, recurred the very next session. Kill it before ending the day; this
+is now the second consecutive close-out flagging it.
+
+**`.tmp/` has a stale leftover file** (`verify-manila-timezone-fix.ts`, dated
+Aug 20, i.e. not from today) sitting in a directory documented in `CLAUDE.md`
+as "regenerated as needed, disposable." Not from today's session, low
+severity, but nobody's cleaned it in 5 days — worth a habit of clearing
+`.tmp/` at close-out, not just not adding to it.
+
+**Commit discipline — sixth consecutive flag, now objectively worse than
+every prior flag.** `git log` shows exactly two commits total
+(`fcd7118`, `463a8d9`), the most recent dated **2026-08-19**. `git status`
+shows **zero commits made today**, and the working tree currently contains
+six full days of uncommitted work: all of Phase 4 (cycle counts, daily
+reconciliation, inter-branch transfer, reporting/export infra), yesterday's
+feature-removal + product-creation session, and today's entire integrity-
+checks restoration + user manual. 26 modified/deleted tracked paths, 30+
+untracked paths including 12 new Prisma migrations. There is no revert point
+for any of it — a lost or corrupted working copy loses six days of verified,
+tested work with zero recovery. This is the same gap flagged 2026-08-10,
+2026-08-12, 2026-08-18, 2026-08-19 (twice — fixed same morning, regressed same
+evening), and 2026-08-24. Every prior flag either got fixed and immediately
+regressed, or was simply carried forward untouched. **A markdown note is not
+a guardrail — see the SOP's own 2026-08-12 cross-project lesson, which this
+project produced and which this project's own history keeps re-proving.**
+This audit does not commit on the user's behalf (commits happen only when
+asked, per operating rules) but is flagging, again, that the fix needs to be
+mechanical (e.g. commit at the end of every session before closing the editor,
+or a pre-close-out hook that refuses to let the session end with a dirty tree
+touching more than N files) rather than a habit that has now failed to hold
+six times in a row.
+
+## 2026-08-24 — close-out audit: feature removals + manual product creation
+
+Verified against the repo, not just the session's own summary. Client-requested
+removal of three features, each scoped individually (blast radius surfaced to
+the client before deleting): **Discrepancy Cases** UI+API fully deleted;
+**Counter Transfer** explicitly left untouched (client's own call — it's the
+only mechanism that stocks the COUNTER zone for Retail Sales); **Cycle-Count
+Compliance** page-only deleted, `getCycleCountComplianceKpi` + its export-registry
+entry + its RBAC row deliberately kept because `g25-cycle-count-compliance.test.ts`
+calls the function directly (confirmed: test file exists, function still has a
+live API route). Also shipped: manual product/catalog creation
+(`POST /api/v1/inventory/products`, `createProduct.ts`) — RBAC-gated
+(`inventory.product.create`, Branch Manager + Owner, confirmed seeded in both
+`inventory_dev` and `inventory_test`), zod-validated, transactional (Product +
+ProductVariant + AuditLog row, no stock/ledger touch — new products start at
+zero on-hand, get real quantity only through Receiving/Adjustments). Duplicate
+SKU handled both pre-check and race-safe (unique-constraint catch → 409
+`DUPLICATE_SKU`, registered in `errorCatalog.ts`). `npm run typecheck` re-run
+independently by this close-out — clean.
+
+**Real bug found and fixed this session (verified correct):**
+`/inventory/page.tsx` originally reused `getConsolidatedBranchStockView`
+(built for the MB-7 "check another branch's stock" report, which only returns
+`StockBalance` rows with `quantityOnHand > 0`) — a newly created product would
+never appear on the main stock-browse page. Fixed by having the page start
+from the full active `ProductVariant` catalog and left-merge in balances,
+defaulting to zero. The shared MB-7 function itself was correctly left
+untouched (still backs its own export/report). Confirmed by reading both
+files — fix is correct and doesn't regress MB-7.
+
+**Real gap this close-out found, not caught during the session:** deleting
+`src/app/(dashboard)/discrepancy-cases/` did not just remove the *review* UI
+for the ~14 workflows that write `DiscrepancyCase` as a side effect of their
+own primary action (true, as documented in `docs/architecture.md` §18 — those
+writes still happen, they just have nowhere to be reviewed from). It also
+deleted `RunAgingCheckButton.tsx` and `POST /api/v1/discrepancy-cases/check-aging`
+— which were the **only** trigger for `checkQuarantineDisposalAging` (G-09:
+14-day quarantine dwell / 30-day for-disposal dwell → mandatory Branch Manager
+physical re-inspection escalation). This function is explicitly "on-demand,
+no cron" per its own doc comment in `aging.ts` — there is no other caller
+anywhere in `src/`. Net effect: G-09 doesn't just lose its review UI, it can
+never fire again, silently. This is a materially different (worse) blast
+radius than what got disclosed to the client in §18, which reads as if all
+~14 workflows just lost visibility, not that one of them stopped running
+entirely. **Needs a decision from the client**: either restore a trigger for
+G-09 elsewhere (e.g. a button on the Quarantine & Disposal Aging report page,
+which still exists and links were pointing at it from the old discrepancy-cases
+page) or accept in writing that this fraud-control check is intentionally
+retired along with the feature. Don't let this sit as an implicit gap — §18
+should be corrected to say this explicitly.
+
+**Correction (2026-08-25 bug/error sweep) — the above close-out entry
+under-scoped this.** `checkOverdueTransfers` (`overdueTransfers.ts`, BPD
+sec.15.3 / BR-090: flags any `InterBranchTransfer` sitting `IN_TRANSIT` or
+`ARRIVED_PENDING_COUNT` more than 3 days past its outbound gate-log
+timestamp) and `checkDeactivatedUserOpenItems` (`deactivatedUsers.ts`, G-31:
+reassigns a deactivated user's open `DiscrepancyCase` items to their branch's
+current manager) were **not** pre-existing gaps — their only triggers were
+`POST /api/v1/discrepancy-cases/overdue-transfers/check` and
+`POST /api/v1/discrepancy-cases/deactivated-users/check`, both deleted along
+with the rest of `src/app/api/v1/discrepancy-cases/` earlier in the
+2026-08-24 session. Confirmed: no other caller of either function exists
+anywhere in `src/`, and no replacement trigger file exists under any name.
+So the actual blast radius of the Discrepancy Cases removal is **three**
+fraud controls gone dark, not one — G-09 (quarantine/disposal aging), G-31
+(deactivated-user case reassignment), and the sec.15.3 overdue-transfer
+check — all "on-demand, no cron" by design, all now unreachable. Their
+regression tests (`g09-*`, `g31-*`) still pass because they call the domain
+functions directly, not through the app, so the suite can't catch this class
+of gap.
+
+`checkOverduePodReturns` (`wholesale/pod.ts`) is the one genuine pre-existing,
+unrelated gap in this group — it was never part of the `discrepancy-cases`
+API tree and has no caller in `src/app` either, so its absence predates
+today's change entirely.
+
+No natural existing page to reattach the overdue-transfer or deactivated-user
+triggers to (unlike G-09, which has `reports/quarantine-disposal-aging` still
+live) — restoring these needs either a small shared ops-utility page or
+individual buttons bolted onto adjacent pages.
+
+**Resolved (2026-08-25).** Client said "do what is best" — restored triggers
+for all three rather than retiring them, since silently losing three fraud
+controls is a worse outcome than a small new utility page, and none of them
+require bringing back the case-browse/close UI the client explicitly wanted
+gone. Built one new page, `/reports/integrity-checks`
+(`src/app/(dashboard)/reports/integrity-checks/page.tsx` +
+`RunCheckButton.tsx`, a shared client component), with one button per check
+posting to a new matching route under `src/app/api/v1/integrity-checks/`.
+Verified over HTTP as Auditor: all three run, RBAC unchanged and correctly
+enforced (Encoder → 403), re-running is idempotent. The overdue-transfer
+check immediately found two real `InterBranchTransfer` rows in the dev
+database that had been silently overdue since 2026-08-19 — concrete proof
+this was a live gap, not a theoretical one. `docs/architecture.md` §18
+updated with the same correction + resolution.
+
+**RBAC/nav mismatch on `/inventory` (pre-existing, not introduced today, but
+today's session edited this exact file without catching it):** `Sidebar.tsx`
+shows the "Inventory" nav link unconditionally to every logged-in role.
+`/inventory/page.tsx` gates on `multibranch.stock.view-other-branch`
+(inherited from reusing `getConsolidatedBranchStockView`), which per
+`prisma/seed.ts` is only granted to `BRANCH_MANAGER`, `OWNER`, `AUDITOR`.
+Every other role (`WAREHOUSE_RECEIVER`, `WAREHOUSE_PICKER`, `WAREHOUSE_CHECKER`,
+`ENCODER`, `CASHIER`, `SALES_REP`, `SECURITY_GUARD`, `SYSTEM_ADMINISTRATOR`) —
+plausibly the roles that most need to check current stock day to day — click
+"Inventory" and get silently redirected to `/` with zero explanation
+(`PermissionDeniedError` → `redirect("/")`, no message shown). Worth deciding
+whether the permission should be broadened for read-only viewing, or the nav
+item itself should be role-filtered so it isn't shown to roles that will just
+bounce.
+
+**Dev-DB cleanup left no audit trail.** The test product created during this
+session's HTTP verification (`TEST-VERIFY-001`, `AuditLog` row id `5`,
+`inventory.product.created`) was removed from `inventory_dev` afterward — not
+left behind, confirmed by direct query, no product/variant with that SKU or
+"test" in the name remains. But the removal itself was a raw delete with no
+corresponding `AuditLog` entry — the "created" row is now an orphan pointing
+at a deleted entity, no "deleted by/when/why" trace exists. Low-severity since
+it's a dev database, but this app's whole premise (`docs/architecture.md` §1)
+is "every unit traceable" — a cleanup habit that bypasses the app's own audit
+log is worth not carrying forward into any prod-adjacent fix.
+
+**Dev server was left running** at close-out time (port 3000, PID active) —
+shut down before leaving for the day, not just after the last verification
+step.
+
+**Commit discipline — recurring, now at its worst point yet.** This is the
+fifth time this exact gap has surfaced in this project's history (2026-08-10
+doc note → 2026-08-12 "never committed" → 2026-08-18 "still one commit" →
+fixed 2026-08-19 morning (`463a8d9`) → regressed same day evening (Phase 4
+uncommitted) → **still regressed now**, five days later. `git log` shows only
+two commits total, the most recent dated 2026-08-19. Everything since —
+all of Phase 4 (cycle counts, daily reconciliation, inter-branch transfer,
+reporting/export infrastructure, multibranch views) plus every change made
+today (discrepancy-cases removal, cycle-count-compliance page removal, the
+new product-creation feature, the `/inventory` bug fix) — sits uncommitted on
+disk only. 75 changed paths in `git status` right now. There is no revert
+point for any of it. This also means most of today's "left X untouched"
+claims (e.g. `getConsolidatedBranchStockView`'s semantics) could not be
+verified against git history by this audit — only by reading the file
+directly — because nothing is checkpointed. Commit before anything else
+touches this repo; this has now cost two close-outs in a row the ability to
+diff against a known-good baseline.
+
+## 2026-08-19 (evening) — Phase 4 build-order steps 5-18 of 18 complete, close-out audit
+
+All of Phase 4 (Cycle Counts, Daily Reconciliation, Inter-Branch Transfer,
+G-31 deactivation cascade, MB-7 cross-branch stock view, G-28 Daily
+Exception Report, Shrinkage Rate + Cycle Count Compliance KPIs, uniform
+`/api/v1/reports/[reportId]/export` endpoint) shipped in one uninterrupted
+session per user instruction (plan's step-by-step check-in cadence
+explicitly suspended). `npx tsc --noEmit` re-verified independently by this
+close-out — clean. `npx prisma migrate status` — "Database schema is up to
+date," 22 migrations, all 9 new Phase 4 migrations are pure-additive
+(CreateTable/CreateEnum/AlterTable-add-column only, no drops). Every new
+API route audited — none call `assertPermission` directly, all delegate to
+their application-layer function, matching this codebase's established
+pattern (verified Phase 2, re-verified here); cross-checked every new
+`action` string against `prisma/seed.ts` grants — all present. No secrets
+in the diff (scanned). `storage/` and `.env` correctly gitignored; no stray
+`.tmp/verify-*.ts` scripts left on disk.
+
+**Real bug found, not previously flagged for this specific code:** four
+brand-new Phase 4 files compute a "business date" / "start of day" boundary
+via raw `Date.UTC(...)` instead of the codebase's own documented Manila
+(UTC+8) helper —
+`src/server/domain/reconciliation/reviewerEligibility.ts:30`,
+`src/server/application/reconciliation/prepare.ts:31`,
+`src/server/application/reporting/dailyExceptionReport.ts:45`, and
+`src/server/application/reporting/deliverExceptionReport.ts:26`. This is
+the exact same bug class the 2026-08-12 close-out flagged in
+`wholesale/spotRecount.ts` and explicitly warned "the same fix likely
+applies elsewhere too" — pointing at `endOfDayManila()` in
+`src/server/domain/session/emergencyElevation.ts` as the correct pattern.
+It recurred anyway, in new code, four more times. Concrete impact:
+`reviewerEligibility.ts` backs G-26 (SoD gate on who may review a
+reconciliation line) — someone who received/released/encoded a product at
+Manila 00:00-08:00 incorrectly passes eligibility to "independently"
+review that same product's reconciliation line later the same Manila
+business date, because the UTC day boundary doesn't match the Manila one.
+`dailyExceptionReport.ts`/`deliverExceptionReport.ts`/`prepare.ts` all
+scope "today's" data 8 hours off from actual Manila business-date
+boundaries. Fix direction: reuse/extract `endOfDayManila()` (or a
+`startOfDayManila()` twin) as a shared helper in one place and have all
+business-date-boundary code call it — including the three pre-existing
+offenders already on record (`validatePostingDate.ts`,
+`exportDailyHash.ts`, `spotRecount.ts`) so this stops recurring file by
+file.
+
+**Positive pattern worth keeping:** `postLedgerEntryInTx`
+(`src/server/domain/ledger/postLedgerEntry.ts`) now writes a
+`ledger.negative_stock_blocked` audit-log row on the standalone global
+Prisma client (not the transaction about to roll back) right before
+throwing `NegativeStockError` — deliberately placed outside the failing
+transaction so a blocked write leaves a permanent, queryable trace instead
+of disappearing with the rollback. This is what feeds the Daily Exception
+Report's `blockedNegativeStockAttempts` category. Good template for any
+future "record that this got blocked" need.
+
+**Git state:** two commits exist (`fcd7118` Phase 1+2, `463a8d9` Phase 3 +
+fixes). All of today's Phase 4 work — 9 migrations, ~60 new application/
+route/domain files, and edits to 9 pre-existing files (all reviewed, all
+legitimate: G-08 branch-lock wiring into `receiving/draft.ts` and
+`wholesale/pick.ts`, the negative-stock audit-log write, new error-catalog
+entries, `resolveOwner`/`resolveBranchManager` export for reuse) — is
+**uncommitted**. This is the third time this exact class of gap has
+surfaced in this project (2026-08-10 doc note, 2026-08-12 "never
+committed," 2026-08-18 "still one commit"); it was fixed once (the
+2026-08-19-morning session that produced commit `463a8d9`) and has already
+regressed. Not fixed by this audit — commits happen only when the user
+asks — but flagged plainly per SOP.
+
 ## 2026-08-19 — two gaps closed from the 2026-08-18 close-out, before Phase 4
 
 Both real gaps flagged in the 2026-08-18 close-out (below) were fixed at the
