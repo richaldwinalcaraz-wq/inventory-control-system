@@ -2,11 +2,18 @@ import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 
 export class NoBranchManagerConfiguredError extends Error {}
+export class NoOwnerConfiguredError extends Error {}
 
 const QUARANTINE_DWELL_DAYS = 14;
 const FOR_DISPOSAL_DWELL_DAYS = 30;
 
-async function resolveBranchManager(prisma: PrismaClient, branchId: string): Promise<string> {
+/**
+ * Exported for reuse by Phase 4's InterBranchTransfer variance/ageing
+ * escalation (BR-090: owned by the sending branch) — same "someone at this
+ * branch, active, primary or granted via UserBranchRole" resolution every
+ * branch-scoped auto-assignment in this codebase uses.
+ */
+export async function resolveBranchManager(prisma: PrismaClient, branchId: string): Promise<string> {
   const primary = await prisma.user.findFirst({ where: { branchId, role: "BRANCH_MANAGER", status: "ACTIVE" } });
   if (primary) return primary.id;
 
@@ -16,6 +23,21 @@ async function resolveBranchManager(prisma: PrismaClient, branchId: string): Pro
   if (viaRole) return viaRole.userId;
 
   throw new NoBranchManagerConfiguredError(`No active Branch Manager found for branch ${branchId} — cannot auto-assign an aging escalation case.`);
+}
+
+/**
+ * Mirrors resolveBranchManager's shape but branch-agnostic — Owner spans
+ * every branch (User.branchId nullable for Owner/Auditor), used by G-25's
+ * 2-consecutive-miss cycle-count escalation.
+ */
+export async function resolveOwner(prisma: PrismaClient): Promise<string> {
+  const primary = await prisma.user.findFirst({ where: { role: "OWNER", status: "ACTIVE" } });
+  if (primary) return primary.id;
+
+  const viaRole = await prisma.userBranchRole.findFirst({ where: { role: "OWNER", user: { status: "ACTIVE" } } });
+  if (viaRole) return viaRole.userId;
+
+  throw new NoOwnerConfiguredError("No active Owner found — cannot auto-assign an aging escalation case.");
 }
 
 /**
