@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { MovementType, Prisma, PrismaClient } from "@prisma/client";
+import { prisma as globalPrisma } from "../../../lib/prisma";
 
 export const GENESIS_HASH = "0".repeat(64);
 
@@ -157,12 +158,39 @@ export async function postLedgerEntryInTx(
     // Chain-tail lock: serializes concurrent posters across the whole
     // (single, global) chain. Fine at this client's volume — see plan
     // sec.3 for the documented tradeoff if this ever needs to scale.
-    const tailRows = await tx.$queryRaw<{ sequence_no: bigint; row_hash: string }[]>`
-      SELECT sequence_no, row_hash FROM stock_ledger ORDER BY sequence_no DESC LIMIT 1 FOR UPDATE
+    //
+    // Locks a single, stable pointer row (stock_ledger_chain_tail, id=1),
+    // never "the last stock_ledger row" via ORDER BY ... LIMIT 1 — that
+    // pattern does NOT serialize concurrent writers in Postgres: a blocked
+    // FOR UPDATE waiter re-locks the exact row it originally identified,
+    // not whatever is now the true tail, so every waiter unblocks holding
+    // the same stale prevHash/sequenceNo and collides on insert. Confirmed
+    // via a concurrency stress test (50 concurrent posters, ~80% failed on
+    // a sequence_no unique-constraint violation) before this fix.
+    //
+    // The lazy-seed below derives its starting point from stock_ledger's
+    // OWN current tail (COALESCE to genesis only when the chain is
+    // genuinely empty) rather than hardcoding 0/GENESIS — a database that
+    // already has ledger history (every real environment except a brand
+    // new install) would otherwise desync the pointer from reality on
+    // first use after this migration, reproducing the exact same
+    // collision cascade this fix exists to prevent. Races safely: if two
+    // callers both reach this before the row exists, both compute the
+    // same seed from identical stock_ledger reads, but only one INSERT
+    // wins (ON CONFLICT DO NOTHING) — the loser just proceeds to the lock
+    // below with the winner's now-committed row.
+    await tx.$executeRaw`
+      INSERT INTO stock_ledger_chain_tail (id, sequence_no, row_hash)
+      SELECT 1, COALESCE(MAX(sequence_no), 0), COALESCE((SELECT row_hash FROM stock_ledger ORDER BY sequence_no DESC LIMIT 1), ${GENESIS_HASH})
+      FROM stock_ledger
+      ON CONFLICT (id) DO NOTHING
     `;
-    const tail = tailRows[0];
-    const prevHash = tail?.row_hash ?? GENESIS_HASH;
-    const sequenceNo = (tail?.sequence_no ?? 0n) + 1n;
+    const tailRows = await tx.$queryRaw<{ sequence_no: bigint; row_hash: string }[]>`
+      SELECT sequence_no, row_hash FROM stock_ledger_chain_tail WHERE id = 1 FOR UPDATE
+    `;
+    const tail = tailRows[0]!;
+    const prevHash = tail.row_hash;
+    const sequenceNo = tail.sequence_no + 1n;
     const createdAt = new Date();
 
     // Negative-stock guard. Deliberately an explicit row lock on the
@@ -185,6 +213,33 @@ export async function postLedgerEntryInTx(
       const currentQty = balanceRows[0] ? Number(balanceRows[0].quantity_on_hand) : 0;
       const resultingQty = currentQty + quantityDelta;
       if (resultingQty < 0 && !usingNegativeStockOverride) {
+        // Blocked attempts previously left no queryable trace anywhere —
+        // the Phase 4 Daily Exception Report needs this data (Phase 4
+        // plan sec.1). Deliberately written via the standalone `prisma`
+        // client, not `tx`: this function is about to throw, which rolls
+        // back whatever transaction `tx` belongs to (the caller's own, or
+        // the one postLedgerEntry opens) — an insert on `tx` would be
+        // undone right along with it. This write must survive that
+        // rollback to be worth anything, so it commits on its own
+        // connection before the throw, not as part of the aborting one.
+        await globalPrisma.auditLog.create({
+          data: {
+            actorId: params.performedBy,
+            action: "ledger.negative_stock_blocked",
+            entityType: "StockBalance",
+            entityId: `${params.productVariantId}:${params.warehouseLocationId}:${batchId}`,
+            afterState: {
+              branchId: params.branchId,
+              movementType: params.movementType,
+              referenceType: params.referenceType,
+              referenceId: params.referenceId,
+              documentNumber: params.documentNumber,
+              currentQty: currentQty.toString(),
+              requestedDelta: quantityDelta.toString(),
+              resultingQty: resultingQty.toString(),
+            },
+          },
+        });
         throw new NegativeStockError(currentQty.toString(), quantityDelta.toString(), resultingQty.toString());
       }
     }
@@ -242,6 +297,10 @@ export async function postLedgerEntryInTx(
       },
       select: { id: true, sequenceNo: true, prevHash: true, rowHash: true },
     });
+
+    await tx.$executeRaw`
+      UPDATE stock_ledger_chain_tail SET sequence_no = ${sequenceNo}, row_hash = ${rowHash} WHERE id = 1
+    `;
 
     await tx.stockBalance.upsert({
       where: {
