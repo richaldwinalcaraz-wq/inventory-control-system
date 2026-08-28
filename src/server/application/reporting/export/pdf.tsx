@@ -23,7 +23,6 @@ function ExportDocument({ table }: { table: ExportTable }) {
           ))}
         </View>
         {table.rows.map((row, i) => (
-          // eslint-disable-next-line react/no-array-index-key
           <View key={i} style={styles.row}>
             {table.columns.map((c) => (
               <Text key={c.key} style={styles.cell}>

@@ -100,7 +100,7 @@ export function NewDamageReportForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-sm font-medium text-slate-700">Cause (required — no-fault reporting, but "Damaged" alone is not acceptable)</label>
+        <label className="mb-1 block text-sm font-medium text-slate-700">Cause (required — no-fault reporting, but &quot;Damaged&quot; alone is not acceptable)</label>
         <textarea
           required
           value={cause}
