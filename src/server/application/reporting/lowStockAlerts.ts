@@ -23,7 +23,16 @@ export interface LowStockAlertRow {
  */
 export async function getLowStockAlerts(prisma: PrismaClient, params: { actorRole: RoleName; branchId?: string }): Promise<LowStockAlertRow[]> {
   await assertPermission(prisma, { role: params.actorRole, action: "reporting.low-stock.view" });
+  return computeLowStockAlerts(prisma, { branchId: params.branchId });
+}
 
+/**
+ * The RBAC-free core of getLowStockAlerts, split out so a lightweight
+ * consumer (e.g. the Overview dashboard's stat cards, visible to every
+ * role) can get the same count without the reporting.low-stock.view
+ * restriction throwing for roles that can't see the full report.
+ */
+export async function computeLowStockAlerts(prisma: PrismaClient, params: { branchId?: string }): Promise<LowStockAlertRow[]> {
   const variants = await prisma.productVariant.findMany({
     where: { reorderPoint: { not: null } },
     select: { id: true, sku: true, reorderPoint: true, product: { select: { name: true } } },
