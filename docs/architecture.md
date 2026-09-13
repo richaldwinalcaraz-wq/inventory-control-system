@@ -572,3 +572,51 @@ left-merging in balances where they exist and defaulting to zero
 otherwise. Verified end-to-end over HTTP: product created as Branch
 Manager, appears in `/inventory` search at zero stock across all branches,
 rejected with 403 for Encoder, duplicate SKU rejected with 409.
+
+**Deployment-scope gate (2026-08-28).** Client asked to launch with only 7
+of the built features visible: Receiving, Damage & Disposal, Inventory,
+Low Stock Alerts, Reorder Points, Daily Exception Report, Shrinkage Rate.
+Implemented as a single enforcement point, `src/middleware.ts` — page
+routes not on an allowlist redirect to `/`, API routes on a blocklist
+return 404 `FEATURE_DISABLED`. Nothing was deleted: every hidden
+page/route/domain function is untouched and still works, `nav-items.ts`
+keeps the full original nav split into `NAV_ITEMS` (shown) and
+`DISABLED_NAV_ITEMS` (everything else, kept intact for restoration).
+Restoring a feature is a one-line move back into `NAV_ITEMS` plus removing
+its matching block in `middleware.ts` — no rewriting needed either
+direction. Overview dashboard trimmed to match (Quick Actions, stat
+cards); `computeLowStockAlerts` was split out of `getLowStockAlerts` so
+the dashboard's stat card works for every role, not just the ones with
+`reporting.low-stock.view`.
+
+Note: `middleware.ts` must live at `src/middleware.ts`, not the project
+root — this repo's `app/` is under `src/`, and Next.js only picks up
+middleware from the same level. Placing it at the root silently no-ops
+(no build/type error either) until moved.
+
+**Pre-Vercel-launch fixes (2026-08-28).**
+- `npm run lint` was completely broken — ESLint 9 needs a flat
+  `eslint.config.js` and none existed (no `.eslintrc` either). Added one
+  reusing the already-installed `eslint-config-next`. Also fixed the 2
+  real issues it then surfaced (unescaped JSX quote, a stale unused
+  eslint-disable comment).
+- `npm audit` turned up a **critical unauthenticated RCE** in the
+  installed Next.js range (16.0.0–16.3.2, GHSA-p293-qw3h-jr36 and
+  GHSA-2xp9-vwfh-vxw4). Upgraded to 16.3.5. Also took the safe
+  non-breaking `js-yaml` fix; left the `uuid`/`exceljs` moderate finding
+  alone since the only fix path is a breaking downgrade of `exceljs` for
+  a buffer-bounds issue that doesn't apply to server-generated UUIDs.
+- `saveEvidencePhoto.ts` (backs Receiving's encode step, Disposal's
+  destroy-evidence step, returns grading, reconciliation bin-card, scrap
+  sale quotes) only ever wrote to the local filesystem —
+  `EVIDENCE_STORAGE_DRIVER` existed in `.env.example` but nothing read
+  it, so it was dead config. That's a hard blocker on Vercel: serverless
+  functions have no persistent or shared filesystem, so evidence photos
+  would silently vanish in production. Wired the env var up for real:
+  `EVIDENCE_STORAGE_DRIVER=filesystem` (default, unchanged local-dev
+  behavior) or `EVIDENCE_STORAGE_DRIVER=vercel-blob` (production — uses
+  `@vercel/blob`, needs `BLOB_READ_WRITE_TOKEN`, which Vercel injects
+  automatically once a Blob store is connected under the project's
+  Storage tab). Returns the blob's public URL as the `storageKey`; no
+  caller-side changes needed since the interface (dataUrl in, storageKey
+  out) is unchanged.
