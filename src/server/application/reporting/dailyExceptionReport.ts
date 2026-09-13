@@ -81,13 +81,38 @@ export async function generateDailyExceptionReport(prisma: PrismaClient, params:
     include: { branch: { select: { code: true } } },
   });
 
+  // One batched query instead of one round trip per booklet — with N
+  // active booklets (21 across 3 branches x 7 doc types once CEB/MNL are
+  // seeded) the old per-booklet loop meant N sequential awaited queries,
+  // which is cheap on a near-zero-latency local Postgres but turns into a
+  // 50+ second page load once the DB is a cross-region pooled connection
+  // (Vercel iad1 <-> Supabase ap-southeast-1) — found because the live
+  // Daily Exception Report page was timing out for the client.
+  const issuedNumbers =
+    activeBooklets.length > 0
+      ? await prisma.documentNumber.findMany({
+          where: {
+            OR: activeBooklets.map((b) => ({
+              branchId: b.branchId,
+              documentType: b.documentType,
+              sequenceNo: { gte: b.rangeStart, lte: b.rangeEnd },
+            })),
+          },
+          select: { branchId: true, documentType: true, sequenceNo: true },
+        })
+      : [];
+
+  const issuedByBooklet = new Map<string, Set<number>>();
+  for (const row of issuedNumbers) {
+    const key = `${row.branchId}:${row.documentType}`;
+    const set = issuedByBooklet.get(key) ?? new Set<number>();
+    set.add(row.sequenceNo);
+    issuedByBooklet.set(key, set);
+  }
+
   const unaccountedFormsProxy: UnaccountedFormsGap[] = [];
   for (const booklet of activeBooklets) {
-    const issued = await prisma.documentNumber.findMany({
-      where: { branchId: booklet.branchId, documentType: booklet.documentType, sequenceNo: { gte: booklet.rangeStart, lte: booklet.rangeEnd } },
-      select: { sequenceNo: true },
-    });
-    const issuedSet = new Set(issued.map((i) => i.sequenceNo));
+    const issuedSet = issuedByBooklet.get(`${booklet.branchId}:${booklet.documentType}`) ?? new Set<number>();
     const missing: number[] = [];
     for (let seq = booklet.rangeStart; seq <= booklet.rangeEnd; seq++) {
       if (!issuedSet.has(seq)) missing.push(seq);
