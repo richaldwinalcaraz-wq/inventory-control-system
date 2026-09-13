@@ -16,6 +16,8 @@
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset-demo": "tsx scripts/reset-demo-data.ts",
+    "db:seed-demo-data": "tsx scripts/seed-demo-data.ts",
+    "db:seed-demo-stock-topup": "tsx scripts/seed-demo-stock-topup.ts",
     "db:rotate-passwords": "tsx scripts/rotate-seeded-passwords.ts",
     "db:test:setup": "tsx scripts/setup-test-db.ts",
     "test": "vitest run",
