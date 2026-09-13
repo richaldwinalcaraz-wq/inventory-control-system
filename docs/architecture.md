@@ -615,8 +615,19 @@ middleware from the same level. Placing it at the root silently no-ops
   would silently vanish in production. Wired the env var up for real:
   `EVIDENCE_STORAGE_DRIVER=filesystem` (default, unchanged local-dev
   behavior) or `EVIDENCE_STORAGE_DRIVER=vercel-blob` (production — uses
-  `@vercel/blob`, needs `BLOB_READ_WRITE_TOKEN`, which Vercel injects
-  automatically once a Blob store is connected under the project's
-  Storage tab). Returns the blob's public URL as the `storageKey`; no
+  `@vercel/blob`). Returns the blob's public URL as the `storageKey`; no
   caller-side changes needed since the interface (dataUrl in, storageKey
   out) is unchanged.
+
+  **Correction (2026-09-12):** the store actually connected on Vercel
+  doesn't expose a plain `BLOB_READ_WRITE_TOKEN` at all — Vercel's current
+  Blob connection model authenticates via a platform-injected OIDC token
+  (`VERCEL_OIDC_TOKEN`, automatic, never set manually) plus an explicit
+  store id, which this project's store exposes as
+  `BLOB_READ_WRITE_TOKEN_STORE_ID` (Vercel's own naming — confirmed from
+  its dashboard Quickstart snippet, not a misconfiguration). `@vercel/blob`
+  v2.8.0's `put()` accepts this as a `storeId` option, so
+  `saveEvidencePhoto.ts`'s vercel-blob branch passes
+  `storeId: process.env.BLOB_READ_WRITE_TOKEN_STORE_ID` explicitly — the
+  original assumption that a bare `BLOB_READ_WRITE_TOKEN` would just show
+  up was wrong.
