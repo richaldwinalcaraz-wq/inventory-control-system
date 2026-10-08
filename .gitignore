@@ -47,3 +47,6 @@ storage/
 
 # scratch/intermediate files — regenerated as needed, disposable (see CLAUDE.md)
 .tmp/
+
+# Client pricing data (price list, mapping workbook, decision PDF) — never commit
+docs/catalog-import/

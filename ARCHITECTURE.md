@@ -681,3 +681,50 @@ session touches these docs again.
   `DATABASE_URL`/`DIRECT_URL` (the dev/test URLs are in `.env.test`, with
   `inventory_test` swapped for `inventory_dev`); never run the import or seed
   without that override.
+
+## 2026-10-08 — Close-out audit (supersedes the "uncommitted" lines above)
+
+- **Git state now:** the 2026-10-05 and 2026-10-08 work is committed as ONE
+  commit, `6fd14b5` on `feat/product-pricing` (98 files, +5.7k lines, three
+  features). It is pushed but not merged or deployed. The two "uncommitted"
+  bullets above are stale. Next time, use one commit per feature: role
+  model / catalog / pricing are separate things to revert.
+- **Client data is NOT gitignored.** `docs/catalog-import/` (client
+  pricing PDF/HTML/xlsx) shows as `??` in `git status`, so one `git add -A`
+  pushes it to the personal GitHub remote. "Intentionally not committed" is
+  only a habit right now. Add it to `.gitignore`.
+- **Pack size vs. per-pack price can drift.** A per-unit price (e.g. ₱4,000
+  per Sack) is set once and never re-checked. A pack-size change (40 -> 50
+  rims) goes through the two-person check, and when it activates
+  (`verifyConversionRate`) the old sack price stays live with no warning.
+  Sack price ≠ rims × rim price is only checked at import time
+  (`priceListImport.ts`), not on later edits or activations.
+- **Legacy `sellingPrice` drift:** `removeVariantPrice` on the base unit
+  retires the VariantPrice row but leaves `ProductVariant.sellingPrice` at
+  the old value. Retail/wholesale drafts still read `sellingPrice`, and the
+  importer writes `basePrice ?? 0` (0 active variants at ₱0 in inventory_dev
+  today). Harmless while retail/wholesale stay blocked in middleware. It
+  matters the day they are unhidden: route them through `quoteLine` first.
+- **INACTIVE bypasses the archive guards:** `updateChildAsin` /
+  `updateParentAsin` can set status INACTIVE with stock on hand, which drops
+  the item from every picker (`PICKABLE_VARIANT_WHERE`). The stock/in-flight
+  checks only run on archive.
+- **Owner SoD exemption** (section 19) is deliberate and documented. Note
+  that tests assert the Owner can request, investigate, approve and post
+  their own adjustment. Separately, the Encoder is both the blind checker
+  and the receiving verifier on the same delivery (nothing blocks
+  checker == verifier), so a delivery is really receiver + one Encoder +
+  Owner approval. Tell the client in plain words.
+- **Scripts default to production:** `db:import-price-list`,
+  `db:apply-three-role-model` and the seed read `.env`, which points at
+  production. The "always override DATABASE_URL" rule is only a note. Before
+  the new DB exists, add a guard (e.g. refuse to run unless
+  `--target=prod|dev` matches the URL host).
+- **Re-verified open threads:** `uniqueBusinessDate()` is still the random
+  5,000-day picker (unchanged since `1fde1b1`). G-26 flake still open.
+  Rotation of the exposed Supabase service_role key and Vercel tokens can't
+  be verified from the repo. Supabase is being abandoned, but the Vercel
+  tokens still need rotating. No Sentry/error monitoring is wired yet.
+- **DB grants:** the app uses Prisma as the table owner only (no supabase-js,
+  no RLS), so the authenticated/service_role GRANT rule doesn't apply yet.
+  Revisit if the new DB (Drizzle switch) adds a Supabase/PostgREST client.
