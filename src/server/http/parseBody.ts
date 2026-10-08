@@ -16,3 +16,12 @@ export async function parseBody<T extends z.ZodTypeAny>(request: NextRequest, sc
   }
   return parsed.data;
 }
+
+/** Validates the URL query string the same way parseBody validates a JSON body (400 on failure). */
+export function parseQuery<T extends z.ZodTypeAny>(request: NextRequest, schema: T): z.infer<T> {
+  const parsed = schema.safeParse(Object.fromEntries(request.nextUrl.searchParams));
+  if (!parsed.success) {
+    throw new InvalidRequestBodyError(parsed.error.issues.map((i) => `${i.path.join(".") || "query"}: ${i.message}`).join("; "));
+  }
+  return parsed.data;
+}

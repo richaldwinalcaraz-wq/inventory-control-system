@@ -4,6 +4,7 @@ import { requirePostingAuthorization } from "../../domain/session/postingAuthori
 import { resolveRequiredApprover } from "../../domain/approval/resolveRequiredApprover";
 import { lockAdjustmentVelocity, computeRollingAdjustmentTotal } from "../../domain/adjustment/velocity";
 import { AdjustmentRequestNotFoundError, InvalidAdjustmentStateError } from "./request";
+import { isOwner, satisfiesApproverTier } from "../../../lib/roleModel";
 
 export class RequesterCannotApproveOwnAdjustmentError extends Error {}
 export class WrongAdjustmentApproverRoleError extends Error {}
@@ -31,7 +32,7 @@ export async function approveAdjustment(prisma: PrismaClient, params: ApproveAdj
   if (req.status !== "PENDING_APPROVAL") {
     throw new InvalidAdjustmentStateError(`Cannot approve an adjustment that is ${req.status} — it must be PENDING_APPROVAL.`);
   }
-  if (req.requestedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && req.requestedBy === params.actorUserId) {
     throw new RequesterCannotApproveOwnAdjustmentError("The requester can never approve their own adjustment, at any value (A-2).");
   }
 
@@ -48,7 +49,7 @@ export async function approveAdjustment(prisma: PrismaClient, params: ApproveAdj
     const threshold = await resolveRequiredApprover(tx, { branchId: req.branchId, transactionType: "ADJUSTMENT", value: rollingTotal });
     const requiredTier = req.reasonCode === "ADJ_10" ? "OWNER" : threshold.requiredApproverRole;
 
-    if (params.actorRole !== requiredTier) {
+    if (!satisfiesApproverTier(params.actorRole, requiredTier)) {
       throw new WrongAdjustmentApproverRoleError(
         `This adjustment requires ${requiredTier} approval (requester's rolling 7-day adjustment total is ₱${rollingTotal.toFixed(2)}).`,
       );
@@ -58,7 +59,7 @@ export async function approveAdjustment(prisma: PrismaClient, params: ApproveAdj
 
     return tx.adjustmentRequest.update({
       where: { id: req.id },
-      data: { status: "APPROVED", approvedBy: params.actorUserId, approvalTier: requiredTier },
+      data: { status: "APPROVED", approvedBy: params.actorUserId, approvalTier: isOwner(params.actorRole) ? "OWNER" : requiredTier },
     });
   });
 }

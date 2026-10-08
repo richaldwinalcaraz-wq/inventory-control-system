@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { actsAs } from "@/lib/roleModel";
 
 type BranchUser = { id: string; fullName: string; role: string };
 type CurrentUser = { id: string; role: string };
@@ -58,7 +59,7 @@ export function DamageReportActionPanel({
 
   const cards: React.ReactNode[] = [];
 
-  if (report.status === "REPORTED" && currentUser.role === "WAREHOUSE_SUPERVISOR") {
+  if (report.status === "REPORTED" && actsAs(currentUser.role, "WAREHOUSE_SUPERVISOR")) {
     cards.push(
       <ActionCard key="investigate" title="Record cause investigation">
         <button
@@ -76,7 +77,7 @@ export function DamageReportActionPanel({
     remaining > 0 &&
     report.status !== "DISPOSED" &&
     report.status !== "CLOSED" &&
-    (currentUser.role === "WAREHOUSE_SUPERVISOR" || currentUser.role === "BRANCH_MANAGER");
+    actsAs(currentUser.role, "WAREHOUSE_SUPERVISOR", "BRANCH_MANAGER");
 
   if (canCreateCertificate) {
     cards.push(

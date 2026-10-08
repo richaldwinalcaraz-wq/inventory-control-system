@@ -1,6 +1,7 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { ReceivingReportNotFoundError, InvalidReceivingReportStateError } from "./draft";
+import { isOwner } from "../../../lib/roleModel";
 
 /** BR-025: assembly is hard-blocked unless both a Receiver and a Checker/tie-break count slip exist. */
 export class BothCountSlipsRequiredError extends Error {}
@@ -50,7 +51,7 @@ export async function verifyReceivingReport(
   if (rr.status !== "PENDING_VERIFICATION") {
     throw new InvalidReceivingReportStateError(`Cannot verify an RR that is ${rr.status}.`);
   }
-  if (rr.receivedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && rr.receivedBy === params.actorUserId) {
     throw new VerifierMustNotBeReceiverError("The verifier must not be the same person who received the goods.");
   }
   if (!(await hasBothCountSlips(prisma, params.rrId))) {

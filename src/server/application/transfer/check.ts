@@ -2,6 +2,7 @@ import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { InterBranchTransferNotFoundError, InvalidInterBranchTransferStateError } from "./request";
 import { TransferCountSlipAlreadySubmittedError } from "./pick";
+import { isOwner } from "../../../lib/roleModel";
 
 export class TransferCheckerMustNotBePickerError extends Error {}
 
@@ -32,7 +33,7 @@ export async function recordTransferCheck(prisma: PrismaClient, params: RecordTr
   const pickSlip = await prisma.countSlip.findFirstOrThrow({
     where: { referenceType: "InterBranchTransfer", referenceId: transfer.id, role: "TRANSFER_PICK" },
   });
-  if (pickSlip.countedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && pickSlip.countedBy === params.actorUserId) {
     throw new TransferCheckerMustNotBePickerError("The checker must not be the same person who picked this transfer (SoD).");
   }
 

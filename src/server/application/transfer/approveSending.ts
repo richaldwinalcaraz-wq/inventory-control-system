@@ -5,6 +5,7 @@ import { resolveRequiredApprover } from "../../domain/approval/resolveRequiredAp
 import { getCurrentUnitCost } from "../../domain/ledger/currentUnitCost";
 import { computeTransitEvidenceRequired } from "../../domain/multibranch/transitEvidence";
 import { InterBranchTransferNotFoundError, InvalidInterBranchTransferStateError } from "./request";
+import { satisfiesApproverTier } from "../../../lib/roleModel";
 
 export class SourceStorageLocationNotFoundError extends Error {}
 export class WrongTransferApproverRoleError extends Error {}
@@ -52,7 +53,7 @@ export async function approveInterBranchTransferSending(prisma: PrismaClient, pa
     const value = Number(transfer.requestedQty) * Number(unitCost);
 
     const threshold = await resolveRequiredApprover(tx, { branchId: transfer.fromBranchId, transactionType: "TRANSFER_OUT", value });
-    if (threshold.requiredApproverRole !== params.actorRole) {
+    if (!satisfiesApproverTier(params.actorRole, threshold.requiredApproverRole)) {
       throw new WrongTransferApproverRoleError(
         `This transfer (value=₱${value.toFixed(2)}) requires ${threshold.requiredApproverRole} approval, not ${params.actorRole}.`,
       );

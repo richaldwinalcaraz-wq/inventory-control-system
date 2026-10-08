@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { CameraCapture } from "@/components/CameraCapture";
 import { PinTokenField } from "@/components/PinTokenField";
+import { actsAs, isOwner } from "@/lib/roleModel";
 
 async function postJson(url: string, body: unknown) {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -67,7 +68,7 @@ export function CertificateActionPanel({
   }
 
   const cards: React.ReactNode[] = [];
-  const canActAsSupervisor = currentUser.role === "WAREHOUSE_SUPERVISOR";
+  const canActAsSupervisor = actsAs(currentUser.role, "WAREHOUSE_SUPERVISOR");
 
   if (cert.disposition === "DESTROY" && cert.status === "DRAFT" && canActAsSupervisor) {
     cards.push(
@@ -211,7 +212,7 @@ export function CertificateActionPanel({
     );
   }
 
-  if (cert.disposition === "SCRAP_SALE" && cert.status === "DRAFT" && scrapSaleRecord?.belowBenchmark && !scrapSaleRecord.ownerApprovedBy && currentUser.role === "OWNER") {
+  if (cert.disposition === "SCRAP_SALE" && cert.status === "DRAFT" && scrapSaleRecord?.belowBenchmark && !scrapSaleRecord.ownerApprovedBy && isOwner(currentUser.role)) {
     cards.push(
       <ActionCard key="scrap-approve" title="Approve below-benchmark scrap sale">
         <PinTokenField tokenId={pinTokenId} onTokenIssued={setPinTokenId} />
@@ -269,7 +270,7 @@ export function CertificateActionPanel({
     );
   }
 
-  if ((cert.status === "DRAFT" || cert.status === "FOR_DISPOSAL") && (currentUser.role === "BRANCH_MANAGER" || currentUser.role === "OWNER")) {
+  if ((cert.status === "DRAFT" || cert.status === "FOR_DISPOSAL") && actsAs(currentUser.role, "BRANCH_MANAGER")) {
     cards.push(
       <ActionCard key="void" title="Void this certificate">
         <input

@@ -639,3 +639,45 @@ session touches these docs again.
 - No secrets/credentials in any markdown doc (grepped for key/token/secret/
   password patterns — only process-document references, e.g. "shared
   passwords" as a named business risk, no actual values).
+
+## 2026-10-05 — Three-role model + Parent/Child ASIN catalog
+
+- Both changes are uncommitted and not deployed: the Supabase project's
+  hostname stopped resolving (NXDOMAIN, almost certainly paused for
+  inactivity), so the production migrations and the role rollout script
+  (`npm run db:apply-three-role-model -- --dry-run`) are waiting on the user
+  to restore it. Migrations to apply: `20261005000000_add_secretary_role`,
+  `20261005010000_add_parent_child_asins`.
+- Manual product creation (`createProduct.ts`, `/inventory/new`) was removed
+  in favor of the ASIN catalog — see `docs/architecture.md` section 20.
+- Open thread: `tests/regression/helpers/reconciliation.ts`'s
+  `uniqueBusinessDate()` picks a random day out of ~5,000, and
+  `daily_reconciliation` is unique on (branch, date). As the shared test DB
+  accumulates rows, G-26 tests fail intermittently on that collision (seen
+  2026-10-05; a re-run passes). Not related to either change; fix the
+  helper (e.g. retry on P2002) before it starts masking real failures.
+- Gotcha: `TaskStop` on a background `next dev` leaves the Node server
+  running on Windows. Kill the PID holding the port, or the stale server
+  keeps serving old code and holds the Prisma engine DLL (`prisma generate`
+  then fails with EPERM).
+
+## 2026-10-08 — Client price list: per-unit prices, pack sizes, import
+
+- Built on the recommended answers to the 5 setup questions in
+  `docs/catalog-import/Product-Price-List-Decisions-with-Examples.pdf`; the
+  client still owes answers to the data questions (column F meaning, 7 price
+  mismatches, ~40 blank prices, names). Design: `docs/architecture.md` section 21.
+- Still uncommitted and undeployed, on top of the 2026-10-05 work. Production
+  migrations now pending: `20261005000000`, `20261005010000`,
+  `20261008000000_add_variant_prices_and_price_list_import`,
+  `20261008000100_backfill_variant_prices`,
+  `20261008000200_variant_display_order`. Then run
+  `npm run db:apply-three-role-model` (now also grants the price/pack-size
+  permissions) and `npm run db:import-price-list -- "<xlsx>" --dry-run`.
+- The client's spreadsheet is NOT in the repo (client pricing data); the
+  import reads it from wherever it is on disk. The dev DB (`inventory_dev`)
+  has it imported, plus a few "UI Test Variant" rows from browser testing.
+- `.env` points at production Supabase. Local runs must override
+  `DATABASE_URL`/`DIRECT_URL` (the dev/test URLs are in `.env.test`, with
+  `inventory_test` swapped for `inventory_dev`); never run the import or seed
+  without that override.

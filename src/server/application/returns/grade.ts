@@ -3,6 +3,7 @@ import { assertPermission } from "../../domain/rbac/assertPermission";
 import { resolveRequiredApprover } from "../../domain/approval/resolveRequiredApprover";
 import { ReturnAuthorizationNotFoundError, InvalidReturnAuthorizationStateError } from "./receive";
 import { resolveOriginalLine, type OriginalSaleType } from "./authorize";
+import { isOwner } from "../../../lib/roleModel";
 
 export class GradingEvidenceRequiredError extends Error {}
 export class GraderCannotBeIssuerError extends Error {}
@@ -86,7 +87,7 @@ export async function submitReturnGrading(prisma: PrismaClient, params: SubmitRe
       // for an above-threshold return — this matters even when a second
       // grading will also happen, since an unchallenged first impression
       // still biases the outcome if the second grader simply agrees.
-      if (secondGradingRequired && params.actorUserId === ra.issuedBy) {
+      if (secondGradingRequired && !isOwner(params.actorRole) && params.actorUserId === ra.issuedBy) {
         throw new GraderCannotBeIssuerError("The RA issuer cannot be the first inspector for an above-threshold return (R-2).");
       }
 
@@ -105,7 +106,7 @@ export async function submitReturnGrading(prisma: PrismaClient, params: SubmitRe
 
     // Grader 2 — blind: never reads grader 1's grade into this response.
     const first = existingGradings[0]!;
-    if (params.actorUserId === first.gradedBy) {
+    if (!isOwner(params.actorRole) && params.actorUserId === first.gradedBy) {
       throw new GraderMustDifferFromFirstGraderError("The second grader must not be the same person as the first grader.");
     }
 

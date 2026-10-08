@@ -7,10 +7,12 @@ import { LinkButton } from "@/components/ui/LinkButton";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ADJUSTMENT_STATUS_TONE } from "./status";
+import { navAllows } from "@/components/layout/nav-items";
 
 export default async function AdjustmentsListPage() {
   const session = await getAppSession();
   if (!session) redirect("/login");
+  if (!navAllows(session.user.role, "/adjustments")) redirect("/");
   const branchId = session.user.branchId;
   if (!branchId) throw new Error("Signed-in user has no branch assigned.");
 

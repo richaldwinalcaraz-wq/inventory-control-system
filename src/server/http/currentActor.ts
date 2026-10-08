@@ -37,10 +37,15 @@ export async function getCurrentActor(): Promise<CurrentActor> {
     throw new UnauthenticatedError("Not signed in.");
   }
 
-  const session = await prisma.session.update({
+  const { user, ...session } = await prisma.session.update({
     where: { id: authSession.sessionId },
     data: { lastActiveAt: new Date() },
+    include: { user: { select: { status: true } } },
   });
+  // The JWT outlives a deactivation by up to 30 days — re-check on every call.
+  if (session.revokedAt || user.status === "DEACTIVATED") {
+    throw new UnauthenticatedError("This account or session is no longer active.");
+  }
 
   return {
     userId: authSession.user.id,

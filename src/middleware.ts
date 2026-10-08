@@ -20,20 +20,19 @@ import { NextResponse, type NextRequest } from "next/server";
  * current page even calls) is deliberately left alone.
  */
 // Pages that own a whole subtree (their own [id]/new/etc. child routes).
-const ALLOWED_PAGE_PREFIXES = ["/receiving", "/disposal"];
+const ALLOWED_PAGE_PREFIXES = ["/receiving", "/disposal", "/adjustments", "/inventory/items"];
 
 // Leaf pages only — listing "/inventory" here as a PREFIX would also allow
 // "/inventory/transfer" (Counter Replenishment, not approved), since that
 // path starts with "/inventory/" too. Every inventory sub-page that IS
 // approved is listed individually instead.
-const ALLOWED_EXACT_PAGES = ["/", "/login", "/inventory", "/inventory/new", "/inventory/low-stock", "/inventory/reorder-points", "/reports/daily-exception", "/reports/shrinkage-rate"];
+const ALLOWED_EXACT_PAGES = ["/", "/login", "/price-list", "/inventory", "/inventory/low-stock", "/inventory/reorder-points", "/reports/daily-exception", "/reports/shrinkage-rate"];
 
 const BLOCKED_API_PREFIXES = [
   "/api/v1/retail-sales",
   "/api/v1/sales-orders",
   "/api/v1/releases",
   "/api/v1/returns",
-  "/api/v1/adjustments",
   "/api/v1/transfer",
   "/api/v1/inventory/transfer",
   "/api/v1/gate-log",

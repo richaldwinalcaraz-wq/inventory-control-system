@@ -631,3 +631,179 @@ middleware from the same level. Placing it at the root silently no-ops
   `storeId: process.env.BLOB_READ_WRITE_TOKEN_STORE_ID` explicitly — the
   original assumption that a bare `BLOB_READ_WRITE_TOKEN` would just show
   up was wrong.
+
+## 19. Three-Role Model: Owner, Encoder, Secretary (2026-10-05)
+
+**Context.** The client is collapsing the 12-role staffing model to three
+roles: Owner, Encoder, and a new Secretary role. The Owner must be able to
+do everything, including adding and removing stock and products.
+
+**Decision.**
+- `src/lib/roleModel.ts` is the single definition. Secretary performs the
+  original Warehouse Receiver's work (draft, first count, inspect, report
+  damage); Encoder performs Encoder + Warehouse Checker work (second count,
+  post) plus receiving verification; Owner performs everything. The other
+  `RoleName` values stay in the enum only so historical rows still resolve.
+- Permissions are derived, not hand-listed: `syncActiveRoleGrants`
+  (`src/server/domain/rbac/activeRoleGrants.ts`) copies the original roles'
+  `RolePermission` rows onto Secretary/Encoder and gives Owner every action
+  at its strongest effect. The seed and the production rollout script both
+  call it, so the three roles can't drift from the matrix.
+- **Owner exemption with the audit trail kept.** The Owner is exempt from
+  the 13 "different person" (SoD) checks and satisfies any approval tier
+  (`satisfiesApproverTier`). Every Owner action still records the Owner as
+  performer/approver in the ledger and audit log; nothing becomes a direct
+  stock-number edit. Secretary and Encoder remain separated from each other
+  by RBAC (a Secretary can't do the checker count; an Encoder can't receive).
+- Adjustments are un-hidden (Owner + Encoder) as the "add/remove stock"
+  path. Items are "removed" by archiving, Owner-only, blocked while any
+  stock or in-flight receiving/adjustment remains (now `archiveChildAsin`,
+  see section 20).
+- The sidebar is filtered by role (`roles` on each nav item).
+
+**Fixed along the way.**
+- A logged-in user stayed fully authorized for up to 30 days after being
+  deactivated (JWT lifetime; nothing re-checked status). `getAppSession`
+  and `getCurrentActor` now reject deactivated users and revoked sessions
+  on every request.
+- Receiving's "Verify" button called the validation-only `prepare` step
+  first, which only the receiver role could run, so verification from the
+  UI always failed for a Supervisor. The redundant call is removed —
+  `verify` re-checks the same condition itself.
+- The disposal witness rule ("second witness must not be a warehouse role")
+  now judges the work a role performs, so a Secretary doesn't count as an
+  independent witness.
+
+**Consequences.** Fewer people means less built-in fraud resistance: the
+Owner can complete any workflow alone, so the Owner's own actions are only
+reviewable after the fact (ledger + audit log), not blocked up front.
+Rollout to an existing database: `npm run db:apply-three-role-model --
+--dry-run`, then without the flag. It derives grants, creates a
+`secretary` account (credentials printed once), and deactivates (never
+deletes) every other account, revoking their sessions.
+
+## 20. Parent ASIN -> Child ASIN Catalog (2026-10-05)
+
+**Context.** The client needs Amazon-style Parent ASINs (a container, e.g.
+"Example T-Shirt") holding Child ASINs (the sellable variations, e.g. Small /
+Black), managed like folders, with Child -> Parent -> Product resolution for
+every transaction and reporting at both levels.
+
+**Decision: extend, don't duplicate.** The catalog already had exactly this
+shape, so no new tables were added:
+- **Parent ASIN = `Product`** (container; never stocked or sold directly).
+- **Child ASIN = `ProductVariant`** (the sellable, stocked item).
+Every transaction (receiving lines, ledger, balances, adjustments, damage
+reports) already references a `ProductVariant`, so Child -> Parent -> Product
+resolution and parent-level roll-ups come from the existing relation.
+
+Migration `20261005010000_add_parent_child_asins` (additive): `asin` (unique),
+optional parent `sku` (unique), `brand`, `description`, `notes`, `updatedAt`
+on `product`; `asin` (unique), `name`, `variation_data` (JSON, e.g.
+`{"Size":"Small","Color":"Black"}`), `notes`, `updatedAt` on
+`product_variant`. Status is `ACTIVE | INACTIVE | ARCHIVED`; nothing is ever
+hard-deleted.
+
+**Rules** (`src/server/domain/catalog/asin.ts`,
+`src/server/application/catalog/`):
+- An ASIN is exactly 10 letters/digits (normalized to upper case) and exists
+  once across both levels — each column is DB-unique, and the cross-table
+  case (an ASIN used as both parent and child) is checked in the
+  application layer. SKUs share one namespace across both levels too.
+- Every child has exactly one parent. A parent may have zero children.
+- A parent can't be archived while it holds any non-archived child; a child
+  can't be archived while it has stock or an in-flight receiving
+  report/adjustment.
+- A child may be moved to another parent only if both count stock in the
+  same base unit (quantities are stored in the parent's base unit).
+- Only ACTIVE children under an ACTIVE parent appear in transaction pickers
+  (`PICKABLE_VARIANT_WHERE`).
+- Owner-only (`inventory.product.create` / `.update` / `.archive`).
+- Every change writes an `AuditLog` row: `catalog.parent.created|updated|
+  archived|restored`, `catalog.child.added|updated|archived|restored|
+  parent_changed`.
+
+**UI.** `/inventory` is the folder view: search (parent/child ASIN, SKU,
+product or child name — a child match opens its parent and highlights it),
+filters (parents vs. children, status, brand, category), per-branch stock
+per child, parent totals. `/inventory/items/[id]` is the child detail page
+(parent context, stock, recent movements, change history). Product pickers
+show `ASIN · SKU — name (variation)`. `GET /api/v1/catalog/resolve?asin=`
+returns the Child -> Parent -> Product context for integrations.
+
+**Superseded.** The old `/inventory/new` page, `POST /api/v1/inventory/products`
+and `createProduct.ts` (section 18) are removed so there is one way to create
+catalog items. The standalone product archive from section 19 became
+`archiveChildAsin`, and no longer auto-archives the parent.
+
+**Consequences / not built.** Reports show units on hand only; there is no
+reimbursement data in this system, and stock balances carry no cost, so
+parent/child *value* totals would need a moving-average cost lookup per
+location. Existing products show as "No ASIN" folders until one is set.
+
+## 21. Selling Units, Per-Unit Prices, and the Client Price List (2026-10-08)
+
+**Context.** The client is a plastics wholesaler. Its price list
+(`WHOLE SALE PRICE.xlsx`, analysed in `docs/catalog-import/`) prices each
+item per sack and per rim, and the same variant is sold in several units at
+different prices. A single `ProductVariant.sellingPrice` could not hold that,
+and none of its items have Amazon ASINs. The setup questions in
+`docs/catalog-import/Product-Price-List-Decisions-with-Examples.pdf` were
+approved on their recommended answers (pending the client's own answers to the
+data questions).
+
+**Decision.**
+- **Product -> Variant -> Unit -> Price.** `VariantPrice` holds one price per
+  variant, unit, price list (`WHOLESALE`/`RETAIL`) and branch scope (null = all
+  branches; a branch row overrides it). History is append-only: a change
+  supersedes the current row and inserts a new one. A hand-written partial
+  unique index (`variant_price_one_current_key`) allows one current row per
+  key, and writers lock the variant row (`FOR UPDATE`), so concurrent changes
+  can't leave two current prices.
+- **Pack sizes reuse `ConversionRateVersion`** ("1 Sack = 40 RIM", always
+  *to* the product's base unit). A unit other than the base unit is sellable
+  only when it has a current price AND an ACTIVE pack size. Imported and newly
+  proposed sizes start PENDING; two people other than the proposer must
+  physically confirm them (BR-068, `verifyConversionRate`). The Owner is *not*
+  exempt here (unlike section 19): the proposer can never confirm their own
+  size. Checks happen on the receiving report ("Confirm pack sizes") or the
+  variant page; a "different count" rejects the size and records the count.
+- **Stock is counted in the product's base unit**, chosen as the smallest unit
+  the product is sold in (Rim for bags, Sack for sack-only items, Piece where
+  the list prices per piece). Pickers and receiving counts show that unit.
+- **Pricing is read in one place**: `src/server/domain/catalog/pricing.ts`
+  (`getSellingUnits`, `quoteLine`). `GET /api/v1/catalog/master` (product
+  master: products -> variants -> units, prices, sizes, stock) and
+  `GET /api/v1/catalog/quote` are the contract for the future Order App. An
+  order must store `quoteLine`'s unit price and total on its own line (a price
+  snapshot) and never accept a price from the client. Not yet wired into
+  `SalesOrderLine`: the wholesale module is hidden in this deployment.
+- **Writes** (`src/server/application/catalog/sellingUnits.ts`):
+  `setVariantPrice`, `removeVariantPrice` ("not sold this way"),
+  `proposePackSize`, `addSellingUnit` (Owner, `inventory.price.update`),
+  `confirmPackSize` / `rejectPackSize` (Owner, Encoder, Secretary,
+  `inventory.pack_size.verify`). Audit actions: `catalog.price.set|removed`,
+  `catalog.pack_size.proposed|checked|activated|rejected`.
+- **ASIN is optional.** Screens say Product / Variant; the ASIN field stays
+  for items that are ever sold on Amazon.
+- **Legacy `sellingPrice`** is kept in step with the current all-branch
+  WHOLESALE price of the base unit, so retail/wholesale code that still reads it
+  stays correct. Migration `20261008000100` backfilled a price row for every
+  existing variant from it.
+- **Price-list import** (`npm run db:import-price-list -- "<file>" --dry-run`):
+  `priceListImport.ts` parses and plans (pure, unit-tested);
+  `scripts/price-list-grouping.ts` maps rows to products (Utensils split into
+  real products; Milk Tea Cups and Trash Bag split where rim-priced and
+  sack-only items can't share a stock unit); `importPriceList.ts` applies it in
+  one transaction. It refuses a file already imported (SHA-256), a plan with
+  conflicts, and any product name that already exists. Every spreadsheet row
+  is kept in `catalog_import_row` with its original text and raw cells, and its
+  open questions are shown on the variant page. Variants keep the sheet's row
+  order (`display_order`). Column F ("PACK") is recorded but never used as a
+  pack size until the client says what it counts.
+
+**Consequences.** `/price-list` (all roles) is the Product -> Variant -> Unit ->
+Quantity -> Price -> Subtotal picker. Until the client answers the open
+questions, 109 sack sizes are pending (sacks can't be sold yet, rims can),
+and ~40 rows have a missing price for one unit. Branch-specific prices are
+supported by the API but have no screen yet.

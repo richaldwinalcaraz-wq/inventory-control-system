@@ -4,10 +4,15 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { CameraCapture } from "@/components/CameraCapture";
 import { PinTokenField } from "@/components/PinTokenField";
+import { actsAs } from "@/lib/roleModel";
 
 interface RRLine {
   productVariantId: string;
   sku: string;
+  /** Variant name, e.g. "K9 Medium White/Colored". */
+  label: string;
+  /** Stock unit the count is entered in, e.g. "RIM". */
+  unitCode: string;
 }
 interface RR {
   id: string;
@@ -45,8 +50,12 @@ function QtyLinesInput({ lines, values, onChange }: { lines: RRLine[]; values: R
     <div className="flex flex-col gap-2">
       {lines.map((l) => (
         <div key={l.productVariantId} className="flex items-center gap-3">
-          <span className="w-40 text-sm text-slate-700">{l.sku}</span>
+          <label htmlFor={`qty-${l.productVariantId}`} className="w-56 text-sm text-slate-700">
+            {l.label}
+            <span className="block font-mono text-xs text-slate-500">{l.sku}</span>
+          </label>
           <input
+            id={`qty-${l.productVariantId}`}
             type="number"
             step="any"
             required
@@ -54,6 +63,7 @@ function QtyLinesInput({ lines, values, onChange }: { lines: RRLine[]; values: R
             onChange={(e) => onChange({ ...values, [l.productVariantId]: e.target.value })}
             className="w-32 rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-brand-600 focus:outline-none"
           />
+          <span className="text-sm text-slate-500">{l.unitCode}</span>
         </div>
       ))}
     </div>
@@ -112,11 +122,12 @@ export function ReceivingActionPanel({
   const linesForQty = (values: Record<string, string>) =>
     rr.lines.map((l) => ({ productVariantId: l.productVariantId, countedQty: Number(values[l.productVariantId] ?? 0) }));
 
-  const canVoid = (currentUser.role === "WAREHOUSE_SUPERVISOR" || currentUser.role === "OWNER") && rr.status !== "POSTED" && rr.status !== "VOID";
+  const role = currentUser.role;
+  const canVoid = actsAs(role, "WAREHOUSE_SUPERVISOR") && rr.status !== "POSTED" && rr.status !== "VOID";
 
   const cards: React.ReactNode[] = [];
 
-  if (rr.status === "DRAFT" && !flags.hasReceiverSlip && currentUser.role === "WAREHOUSE_RECEIVER") {
+  if (rr.status === "DRAFT" && !flags.hasReceiverSlip && actsAs(role, "WAREHOUSE_RECEIVER")) {
     cards.push(
       <ActionCard key="receiver-count" title="Step 4 — Submit your count (Receiver)">
         <QtyLinesInput lines={rr.lines} values={qty} onChange={setQty} />
@@ -131,7 +142,7 @@ export function ReceivingActionPanel({
     );
   }
 
-  if (rr.status === "DRAFT" && flags.hasReceiverSlip && !flags.hasCheckerSlip && currentUser.role === "WAREHOUSE_CHECKER") {
+  if (rr.status === "DRAFT" && flags.hasReceiverSlip && !flags.hasCheckerSlip && actsAs(role, "WAREHOUSE_CHECKER")) {
     cards.push(
       <ActionCard key="checker-count" title="Step 5 — Submit your count (Checker, blind)">
         <p className="mb-2 text-xs text-slate-500">You will not see the receiver&apos;s figures — count independently.</p>
@@ -147,7 +158,7 @@ export function ReceivingActionPanel({
     );
   }
 
-  if (rr.status === "DRAFT" && flags.needsTieBreak && currentUser.role === "WAREHOUSE_SUPERVISOR") {
+  if (rr.status === "DRAFT" && flags.needsTieBreak && actsAs(role, "WAREHOUSE_SUPERVISOR")) {
     cards.push(
       <ActionCard key="tiebreak" title="Step 5 — Tie-break (counts disagreed)">
         <div className="mb-3">
@@ -172,7 +183,7 @@ export function ReceivingActionPanel({
     );
   }
 
-  if (rr.status === "PENDING_INSPECTION" && (currentUser.role === "WAREHOUSE_RECEIVER" || currentUser.role === "WAREHOUSE_SUPERVISOR")) {
+  if (rr.status === "PENDING_INSPECTION" && actsAs(role, "WAREHOUSE_RECEIVER", "WAREHOUSE_SUPERVISOR")) {
     cards.push(
       <ActionCard key="inspect" title="Step 6 — Quality inspection">
         <div className="flex gap-2">
@@ -183,7 +194,7 @@ export function ReceivingActionPanel({
           >
             Pass
           </button>
-          {currentUser.role === "WAREHOUSE_SUPERVISOR" ? (
+          {actsAs(role, "WAREHOUSE_SUPERVISOR") ? (
             <button
               disabled={pending}
               onClick={() => run(() => postJson(`/api/v1/receiving/${rr.id}/inspect`, { outcome: "REJECT" }))}
@@ -197,21 +208,16 @@ export function ReceivingActionPanel({
     );
   }
 
-  if (rr.status === "PENDING_VERIFICATION" && currentUser.role === "WAREHOUSE_SUPERVISOR") {
-    const isReceiver = rr.receivedBy === currentUser.id;
+  if (rr.status === "PENDING_VERIFICATION" && (actsAs(role, "WAREHOUSE_SUPERVISOR") || role === "ENCODER")) {
+    const isReceiver = rr.receivedBy === currentUser.id && role !== "OWNER";
     cards.push(
-      <ActionCard key="verify" title="Steps 7–8 — Prepare & verify">
+      <ActionCard key="verify" title="Step 8 — Verify">
         {isReceiver ? (
           <p className="text-sm text-red-600">You received this delivery and cannot verify it yourself.</p>
         ) : (
           <button
             disabled={pending}
-            onClick={() =>
-              run(async () => {
-                await postJson(`/api/v1/receiving/${rr.id}/prepare`, {});
-                await postJson(`/api/v1/receiving/${rr.id}/verify`, {});
-              })
-            }
+            onClick={() => run(() => postJson(`/api/v1/receiving/${rr.id}/verify`, {}))}
             className="rounded-md bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-800 disabled:opacity-50"
           >
             Verify receiving report
@@ -223,7 +229,7 @@ export function ReceivingActionPanel({
 
   if (rr.status === "PENDING_APPROVAL") {
     const needsCallback = !rr.poReference && !rr.supplierCallbackConfirmedAt;
-    if (needsCallback && (currentUser.role === "WAREHOUSE_RECEIVER" || currentUser.role === "WAREHOUSE_SUPERVISOR")) {
+    if (needsCallback && actsAs(role, "WAREHOUSE_RECEIVER", "WAREHOUSE_SUPERVISOR")) {
       cards.push(
         <ActionCard key="callback" title="G-04 — Confirm supplier call-back">
           <p className="mb-2 text-xs text-slate-500">No PO is on file. Call the supplier back on the number on file, then confirm here.</p>
@@ -237,7 +243,7 @@ export function ReceivingActionPanel({
         </ActionCard>,
       );
     }
-    if (!needsCallback && (currentUser.role === "BRANCH_MANAGER" || currentUser.role === "OWNER")) {
+    if (!needsCallback && actsAs(role, "BRANCH_MANAGER")) {
       cards.push(
         <ActionCard key="approve" title="Step 9 — Approve">
           <PinTokenField tokenId={pinTokenId} onTokenIssued={setPinTokenId} />
@@ -253,7 +259,7 @@ export function ReceivingActionPanel({
     }
   }
 
-  if (rr.status === "APPROVED" && currentUser.role === "ENCODER") {
+  if (rr.status === "APPROVED" && actsAs(role, "ENCODER")) {
     cards.push(
       <ActionCard key="encode" title="Step 10 — Encode & post">
         <div className="mb-4">
@@ -278,7 +284,7 @@ export function ReceivingActionPanel({
       </ActionCard>,
     );
   }
-  if (rr.status === "QUARANTINE" && (currentUser.role === "WAREHOUSE_SUPERVISOR" || currentUser.role === "BRANCH_MANAGER" || currentUser.role === "OWNER")) {
+  if (rr.status === "QUARANTINE" && actsAs(role, "WAREHOUSE_SUPERVISOR", "BRANCH_MANAGER")) {
     cards.push(
       <ActionCard key="quarantine" title="Quarantined">
         <p className="mb-3 text-sm text-slate-600">

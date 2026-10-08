@@ -19,6 +19,8 @@
     "db:seed-demo-data": "tsx scripts/seed-demo-data.ts",
     "db:seed-demo-stock-topup": "tsx scripts/seed-demo-stock-topup.ts",
     "db:rotate-passwords": "tsx scripts/rotate-seeded-passwords.ts",
+    "db:apply-three-role-model": "tsx scripts/apply-three-role-model.ts",
+    "db:import-price-list": "tsx scripts/import-wholesale-price-list.ts",
     "db:test:setup": "tsx scripts/setup-test-db.ts",
     "test": "vitest run",
     "test:watch": "vitest"

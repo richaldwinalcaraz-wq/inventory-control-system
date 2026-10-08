@@ -7,6 +7,7 @@ import { issueDocumentNumber } from "../../domain/documents/documentNumber";
 import { postLedgerEntryInTx } from "../../domain/ledger/postLedgerEntry";
 import { markDamageReportDisposedIfComplete } from "../../domain/disposal/finalize";
 import { DisposalCertificateNotFoundError, InvalidDisposalCertificateStateError, WrongDispositionError, NotReadyForDisposalPostingError } from "./destroy";
+import { satisfiesApproverTier } from "../../../lib/roleModel";
 
 export class ScrapSaleAlreadyRecordedError extends Error {}
 export class ScrapSaleJustificationRequiredError extends Error {}
@@ -129,7 +130,7 @@ export async function approveScrapSaleBelowBenchmark(prisma: PrismaClient, param
     if (record.ownerApprovedBy) throw new ScrapSaleAlreadyApprovedError("This scrap sale is already approved.");
 
     const threshold = await resolveRequiredApprover(tx, { branchId: cert.damageReport.branchId, transactionType: "SCRAP_SALE_BELOW_BENCHMARK", value: Number(record.totalValue) });
-    if (params.actorRole !== threshold.requiredApproverRole) {
+    if (!satisfiesApproverTier(params.actorRole, threshold.requiredApproverRole)) {
       throw new WrongScrapSaleApproverRoleError(`This below-benchmark scrap sale requires ${threshold.requiredApproverRole} approval.`);
     }
 

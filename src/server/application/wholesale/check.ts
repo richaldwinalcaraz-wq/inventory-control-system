@@ -1,6 +1,7 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { SalesOrderNotFoundError, InvalidSalesOrderStateError } from "./order";
+import { isOwner } from "../../../lib/roleModel";
 
 export class CheckerMustNotBePickerError extends Error {}
 export class CountSlipAlreadySubmittedForOrderError extends Error {}
@@ -31,7 +32,7 @@ export async function checkSalesOrder(prisma: PrismaClient, params: CheckSalesOr
   if (order.status !== "STAGED") {
     throw new InvalidSalesOrderStateError(`Cannot check a sales order that is ${order.status} — it must be STAGED.`);
   }
-  if (order.pickedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && order.pickedBy === params.actorUserId) {
     throw new CheckerMustNotBePickerError("The checker must not be the same person who picked this order (SoD).");
   }
 

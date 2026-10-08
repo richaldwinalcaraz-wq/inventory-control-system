@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { ReceivingActionPanel } from "./ReceivingActionPanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { RECEIVING_STATUS_TONE } from "../status";
+import { Card } from "@/components/ui/Card";
+import { PackSizeCheck } from "@/components/catalog/PackSizeCheck";
 
 export default async function ReceivingDetailPage({ params }: { params: Promise<{ rrId: string }> }) {
   const { rrId } = await params;
@@ -23,7 +25,7 @@ export default async function ReceivingDetailPage({ params }: { params: Promise<
           finalQty: true,
           unitCost: true,
           lineStatus: true,
-          productVariant: { select: { sku: true, product: { select: { name: true } } } },
+          productVariant: { select: { sku: true, name: true, product: { select: { name: true, baseUnit: { select: { code: true } } } } } },
         },
       },
     },
@@ -45,6 +47,17 @@ export default async function ReceivingDetailPage({ params }: { params: Promise<
     select: { id: true, fullName: true, role: true },
   });
 
+  // Pack sizes ("1 Sack = 40 RIM") still waiting for their two physical
+  // checks, for the items on this delivery — the goods are in hand here.
+  const pendingPackSizes =
+    rr.status === "VOID"
+      ? []
+      : await prisma.conversionRateVersion.findMany({
+          where: { productVariantId: { in: rr.lines.map((l) => l.productVariantId) }, status: "PENDING_VERIFICATION" },
+          include: { fromUnit: { select: { name: true } }, toUnit: { select: { code: true } }, productVariant: { select: { sku: true, name: true, product: { select: { name: true } } } } },
+          orderBy: { createdAt: "asc" },
+        });
+
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-4">
@@ -61,7 +74,7 @@ export default async function ReceivingDetailPage({ params }: { params: Promise<
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="px-3 py-2">SKU</th>
-              <th className="px-3 py-2">Product</th>
+              <th className="px-3 py-2">Item</th>
               <th className="px-3 py-2">Expected</th>
               <th className="px-3 py-2">Final</th>
               <th className="px-3 py-2">Unit cost</th>
@@ -72,9 +85,16 @@ export default async function ReceivingDetailPage({ params }: { params: Promise<
             {rr.lines.map((l) => (
               <tr key={l.id} className="border-t border-slate-100">
                 <td className="px-3 py-2">{l.productVariant.sku}</td>
-                <td className="px-3 py-2">{l.productVariant.product.name}</td>
-                <td className="px-3 py-2">{l.expectedQty?.toString() ?? "—"}</td>
-                <td className="px-3 py-2">{l.finalQty?.toString() ?? "—"}</td>
+                <td className="px-3 py-2">
+                  {l.productVariant.name ?? l.productVariant.product.name}
+                  {l.productVariant.name ? <span className="block text-xs text-slate-500">{l.productVariant.product.name}</span> : null}
+                </td>
+                <td className="px-3 py-2">
+                  {l.expectedQty?.toString() ?? "—"} {l.expectedQty ? <span className="text-xs text-slate-500">{l.productVariant.product.baseUnit.code}</span> : null}
+                </td>
+                <td className="px-3 py-2">
+                  {l.finalQty?.toString() ?? "—"} {l.finalQty ? <span className="text-xs text-slate-500">{l.productVariant.product.baseUnit.code}</span> : null}
+                </td>
                 <td className="px-3 py-2">{l.unitCost.toString()}</td>
                 <td className="px-3 py-2">{l.lineStatus}</td>
               </tr>
@@ -83,6 +103,35 @@ export default async function ReceivingDetailPage({ params }: { params: Promise<
         </table>
       </div>
 
+      {pendingPackSizes.length > 0 ? (
+        <Card className="mb-6 border-amber-200 p-4">
+          <h2 className="text-sm font-semibold text-slate-900">Confirm pack sizes</h2>
+          <p className="mb-3 text-xs text-slate-600">
+            These sizes came from the price list and don&apos;t count until two people open one and count it. Whoever proposed a size can&apos;t check it.
+          </p>
+          <ul className="flex flex-col divide-y divide-slate-100">
+            {pendingPackSizes.map((p) => {
+              const canCheck = p.proposedBy !== session.user.id && p.verifiedByUser1 !== session.user.id;
+              return (
+                <li key={p.id} className="flex flex-wrap items-start justify-between gap-3 py-3">
+                  <div className="text-sm">
+                    <p className="font-medium text-slate-900">{p.productVariant.name ?? p.productVariant.product.name}</p>
+                    <p className="text-slate-600">
+                      1 {p.fromUnit.name} = {Number(p.rate)} {p.toUnit.code}? <span className="text-xs text-slate-500">({p.verifiedByUser1 ? "1" : "0"} of 2 checks)</span>
+                    </p>
+                  </div>
+                  {canCheck ? (
+                    <PackSizeCheck conversionRateVersionId={p.id} unitName={p.fromUnit.name} baseUnitCode={p.toUnit.code} rate={Number(p.rate)} checksDone={p.verifiedByUser1 ? 1 : 0} />
+                  ) : (
+                    <span className="text-xs text-slate-500">{p.proposedBy === session.user.id ? "You proposed this size, so someone else must check it." : "You already checked this. A second person must confirm it."}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
+      ) : null}
+
       <ReceivingActionPanel
         rr={{
           id: rr.id,
@@ -90,7 +139,12 @@ export default async function ReceivingDetailPage({ params }: { params: Promise<
           receivedBy: rr.receivedBy,
           poReference: rr.poReference,
           supplierCallbackConfirmedAt: rr.supplierCallbackConfirmedAt?.toISOString() ?? null,
-          lines: rr.lines.map((l) => ({ productVariantId: l.productVariantId, sku: l.productVariant.sku })),
+          lines: rr.lines.map((l) => ({
+            productVariantId: l.productVariantId,
+            sku: l.productVariant.sku,
+            label: l.productVariant.name ?? l.productVariant.product.name,
+            unitCode: l.productVariant.product.baseUnit.code,
+          })),
         }}
         flags={{ hasReceiverSlip, hasCheckerSlip, hasTieBreakSlip, needsTieBreak }}
         currentUser={{ id: session.user.id, role: session.user.role }}

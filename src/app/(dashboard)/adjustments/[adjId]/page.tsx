@@ -4,11 +4,13 @@ import { prisma } from "@/lib/prisma";
 import { AdjustmentActionPanel } from "./AdjustmentActionPanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ADJUSTMENT_STATUS_TONE } from "../status";
+import { navAllows } from "@/components/layout/nav-items";
 
 export default async function AdjustmentDetailPage({ params }: { params: Promise<{ adjId: string }> }) {
   const { adjId } = await params;
   const session = await getAppSession();
   if (!session) redirect("/login");
+  if (!navAllows(session.user.role, "/adjustments")) redirect("/");
 
   const req = await prisma.adjustmentRequest.findUnique({
     where: { id: adjId },

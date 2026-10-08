@@ -2,6 +2,7 @@ import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { resolveBranchManager } from "../discrepancy/aging";
 import { InterBranchTransferNotFoundError, InvalidInterBranchTransferStateError } from "./request";
+import { isOwner } from "../../../lib/roleModel";
 
 export class TransferReceiveCountAlreadySubmittedError extends Error {}
 export class TransferReceiveCountMissingError extends Error {}
@@ -84,7 +85,7 @@ export async function recordTransferReceiveCheck(prisma: PrismaClient, params: R
     include: { lines: true },
   });
   if (!receiveSlip) throw new TransferReceiveCountMissingError("The receive count must be submitted first.");
-  if (receiveSlip.countedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && receiveSlip.countedBy === params.actorUserId) {
     throw new TransferReceiveCheckerMustNotBeReceiverError("The checker must not be the same person as the receiver.");
   }
   const existingCheck = await prisma.countSlip.findFirst({

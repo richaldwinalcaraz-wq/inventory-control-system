@@ -18,6 +18,7 @@ import {
   TrendUpIcon,
   ClockCounterClockwiseIcon,
   ShieldCheckIcon,
+  TagIcon,
 } from "@phosphor-icons/react/dist/ssr";
 import type { Icon as IconType } from "@phosphor-icons/react";
 import { NAV_ITEMS } from "./nav-items";
@@ -31,6 +32,7 @@ const ICONS: Record<string, IconType> = {
   "/returns": ArrowUUpLeftIcon,
   "/disposal": FireIcon,
   "/adjustments": SlidersHorizontalIcon,
+  "/price-list": TagIcon,
   "/inventory/transfer": ArrowsLeftRightIcon,
   "/inventory": PackageIcon,
   "/inventory/low-stock": WarningIcon,
@@ -45,7 +47,7 @@ const ICONS: Record<string, IconType> = {
   "/reports/integrity-checks": ShieldCheckIcon,
 };
 
-export function Sidebar() {
+export function Sidebar({ role }: { role: string }) {
   const pathname = usePathname();
 
   return (
@@ -66,7 +68,7 @@ export function Sidebar() {
             <p className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-wide text-brand-400">
               {section}
             </p>
-            {NAV_ITEMS.filter((item) => item.section === section).map(({ href, label, exact }) => {
+            {NAV_ITEMS.filter((item) => item.section === section && (item.roles as readonly string[]).includes(role)).map(({ href, label, exact }) => {
               const active = exact ? pathname === href : pathname.startsWith(href);
               const NavIcon = ICONS[href] ?? StackIcon;
               return (

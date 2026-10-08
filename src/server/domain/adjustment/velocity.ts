@@ -60,7 +60,8 @@ export async function downgradeInsufficientApprovedSiblings(
     // Rolling total only grows from a new submission, so a plain
     // inequality is enough to detect "insufficient" — no role-ranking
     // table needed (see AdjustmentRequest.approvalTier's schema comment).
-    if (sibling.approvalTier !== params.requiredTier) {
+    // OWNER is the top tier, so an Owner approval stays sufficient at any rolling total.
+    if (sibling.approvalTier !== "OWNER" && sibling.approvalTier !== params.requiredTier) {
       await tx.adjustmentRequest.update({ where: { id: sibling.id }, data: { status: "PENDING_APPROVAL", approvalTier: null } });
       await tx.auditLog.create({
         data: {

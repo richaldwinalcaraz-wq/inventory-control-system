@@ -1,5 +1,6 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
+import { isOwner } from "../../../lib/roleModel";
 
 export class CycleCountRecordNotFoundError extends Error {}
 export class InvalidCycleCountRecordStateError extends Error {}
@@ -30,7 +31,7 @@ async function getCountingRecord(prisma: PrismaClient, cycleCountRecordId: strin
 }
 
 function assertCustodyFields(params: SubmitCycleCountParams) {
-  if (params.collectedBy && params.collectedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && params.collectedBy && params.collectedBy === params.actorUserId) {
     throw new CollectorMustNotBeCounterError("G-24: the person who collected the count sheet must not be the counter themself.");
   }
 }
@@ -79,7 +80,7 @@ export async function submitSecondaryCount(prisma: PrismaClient, params: SubmitC
   const record = await getCountingRecord(prisma, params.cycleCountRecordId);
   const primarySlip = await prisma.countSlip.findFirst({ where: { referenceType: "CycleCountRecord", referenceId: record.id, role: "CYCLE_COUNT_PRIMARY" }, include: { lines: true } });
   if (!primarySlip) throw new PrimaryCountMissingError("The primary count must be submitted first.");
-  if (primarySlip.countedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && primarySlip.countedBy === params.actorUserId) {
     throw new SecondaryCounterMustNotBePrimaryError("The secondary counter must not be the same person as the primary counter.");
   }
   const existingSecondary = await prisma.countSlip.findFirst({ where: { referenceType: "CycleCountRecord", referenceId: record.id, role: "CYCLE_COUNT_SECONDARY" } });

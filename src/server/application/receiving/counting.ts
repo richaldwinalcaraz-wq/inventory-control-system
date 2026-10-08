@@ -1,6 +1,7 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { ReceivingReportNotFoundError, InvalidReceivingReportStateError } from "./draft";
+import { isOwner } from "../../../lib/roleModel";
 
 export class CountSlipAlreadySubmittedError extends Error {}
 export class ReceiverCountMissingError extends Error {}
@@ -78,7 +79,7 @@ export async function submitCheckerCount(
   });
   const receiverSlip = existingSlips.find((s) => s.role === "RECEIVER");
   if (!receiverSlip) throw new ReceiverCountMissingError("The receiver count must be submitted first.");
-  if (receiverSlip.countedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && receiverSlip.countedBy === params.actorUserId) {
     throw new CheckerMustNotBeReceiverError("The Checker must not be the same person as the Receiver (SoD-3).");
   }
   if (existingSlips.some((s) => s.role === "CHECKER")) {

@@ -2,6 +2,7 @@ import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { resolveRequiredApprover } from "../../domain/approval/resolveRequiredApprover";
 import { AdjustmentRequestNotFoundError, InvalidAdjustmentStateError } from "./request";
+import { isOwner } from "../../../lib/roleModel";
 
 export class InvestigatorCannotBeRequesterError extends Error {}
 export class AuditorReviewRequiredError extends Error {}
@@ -34,7 +35,7 @@ export async function investigateAdjustment(prisma: PrismaClient, params: Invest
   if (req.status !== "PENDING_INVESTIGATION") {
     throw new InvalidAdjustmentStateError(`Cannot investigate an adjustment that is ${req.status} — it must be PENDING_INVESTIGATION.`);
   }
-  if (req.requestedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && req.requestedBy === params.actorUserId) {
     throw new InvestigatorCannotBeRequesterError("The investigator must not be the requester (A-2/A-1).");
   }
 
@@ -47,7 +48,7 @@ export async function investigateAdjustment(prisma: PrismaClient, params: Invest
 
   const threshold = await resolveRequiredApprover(prisma, { branchId: req.branchId, transactionType: "ADJUSTMENT", value: Number(req.value) });
   const requiresAuditor = req.reasonCode === "ADJ_10" || threshold.requiredApproverRole === "OWNER";
-  if (requiresAuditor && params.actorRole !== "AUDITOR") {
+  if (requiresAuditor && params.actorRole !== "AUDITOR" && !isOwner(params.actorRole)) {
     throw new AuditorReviewRequiredError(
       "This adjustment's value crosses the Owner approval threshold (or is a theft/loss claim) — it requires an Auditor's investigation, not just a Branch Manager's (A-4/A-5).",
     );

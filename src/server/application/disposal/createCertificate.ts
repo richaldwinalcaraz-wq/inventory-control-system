@@ -3,6 +3,7 @@ import { assertPermission } from "../../domain/rbac/assertPermission";
 import { getCurrentUnitCost } from "../../domain/ledger/currentUnitCost";
 import { lockDamageReportDisposalRow, computeRemainingUndisposedQty } from "../../domain/disposal/disposalLock";
 import { DamageReportNotFoundError } from "./investigate";
+import { PERFORMS_AS } from "../../../lib/roleModel";
 
 export class ExceedsUndisposedQtyError extends Error {}
 export class WitnessMustNotBeWarehouseRoleError extends Error {}
@@ -43,7 +44,9 @@ export async function createDisposalCertificate(prisma: PrismaClient, params: Cr
     if (!report) throw new DamageReportNotFoundError(params.damageReportId);
 
     const witness2 = await tx.user.findUnique({ where: { id: params.witness2Id } });
-    if (!witness2 || WAREHOUSE_ROLES.includes(witness2.role)) {
+    // Judged by the work the role performs, so a Secretary (receiving work) is not "independent" either.
+    const witness2DoesWarehouseWork = witness2 !== null && [witness2.role, ...(PERFORMS_AS[witness2.role] ?? [])].some((r) => WAREHOUSE_ROLES.includes(r as RoleName));
+    if (!witness2 || witness2DoesWarehouseWork) {
       throw new WitnessMustNotBeWarehouseRoleError("The second witness must not hold a warehouse role — an independent perspective is required.");
     }
 

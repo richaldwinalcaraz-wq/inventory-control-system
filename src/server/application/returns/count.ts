@@ -1,6 +1,7 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { ReturnAuthorizationNotFoundError, InvalidReturnAuthorizationStateError } from "./receive";
+import { isOwner } from "../../../lib/roleModel";
 
 export class ReturnCountAlreadySubmittedError extends Error {}
 export class ReturnReceiveCountMissingError extends Error {}
@@ -83,7 +84,7 @@ export async function submitReturnCheckCount(prisma: PrismaClient, params: Submi
   });
   const receiveSlip = existing.find((s) => s.role === "RETURN_RECEIVE");
   if (!receiveSlip) throw new ReturnReceiveCountMissingError("The receiver count must be submitted first.");
-  if (receiveSlip.countedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && receiveSlip.countedBy === params.actorUserId) {
     throw new ReturnCheckerMustNotBeReceiverError("The Checker must not be the same person as the Receiver.");
   }
   if (existing.some((s) => s.role === "RETURN_CHECK")) {

@@ -7,6 +7,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { PrismaClient, RoleName, PermissionEffect, WarehouseZone } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { postLedgerEntry } from "../src/server/domain/ledger/postLedgerEntry";
+import { syncActiveRoleGrants } from "../src/server/domain/rbac/activeRoleGrants";
 
 const prisma = new PrismaClient();
 
@@ -28,6 +29,8 @@ async function main() {
       { code: "ROLL", name: "Roll" },
       { code: "PACK", name: "Pack" },
       { code: "BOX", name: "Box" },
+      { code: "SACK", name: "Sack" },
+      { code: "RIM", name: "Rim" },
     ].map((u) => prisma.unitOfMeasure.upsert({ where: { code: u.code }, update: {}, create: u })),
   );
   const unitMap = new Map(units.map((u) => [u.code, u]));
@@ -403,6 +406,17 @@ async function main() {
     // behind Receiving/Adjustments as normal).
     { role: RoleName.BRANCH_MANAGER, action: "inventory.product.create", effect: PermissionEffect.CREATE },
     { role: RoleName.OWNER, action: "inventory.product.create", effect: PermissionEffect.CREATE },
+    // Parent/Child ASIN catalog (src/server/application/catalog) — Owner only.
+    // Archive is blocked while a child has stock or a parent has live children.
+    { role: RoleName.OWNER, action: "inventory.product.update", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "inventory.product.archive", effect: PermissionEffect.CREATE },
+    // Selling units & prices (src/server/application/catalog/sellingUnits.ts).
+    // Owner sets prices and proposes pack sizes; a pack size counts only after
+    // two people other than the proposer physically check it.
+    { role: RoleName.OWNER, action: "inventory.price.update", effect: PermissionEffect.CREATE },
+    { role: RoleName.OWNER, action: "inventory.pack_size.verify", effect: PermissionEffect.CREATE },
+    { role: RoleName.ENCODER, action: "inventory.pack_size.verify", effect: PermissionEffect.CREATE },
+    { role: RoleName.SECRETARY, action: "inventory.pack_size.verify", effect: PermissionEffect.CREATE },
   ];
 
   for (const p of permissions) {
@@ -412,6 +426,10 @@ async function main() {
       create: p,
     });
   }
+
+  // Three-role model (src/lib/roleModel.ts): SECRETARY/ENCODER/OWNER grants
+  // are derived from the matrix above rather than listed by hand.
+  const derivedGrants = await syncActiveRoleGrants(prisma);
 
   // Sample products/variants, each with an ACTIVE, witnessed-verified
   // conversion rate, so the Receiving workflow (and a client demo) has a
@@ -510,6 +528,12 @@ async function main() {
         effectiveFrom: new Date(),
       },
     });
+    // Base-unit wholesale price (src/server/domain/catalog/pricing.ts). Skipped
+    // if one is already current, so re-seeding never duplicates it.
+    const hasBasePrice = await prisma.variantPrice.count({ where: { productVariantId: variant.id, unitId: unitByCode("PC").id, priceList: "WHOLESALE", branchId: null, supersededAt: null } });
+    if (hasBasePrice === 0) {
+      await prisma.variantPrice.create({ data: { productVariantId: variant.id, unitId: unitByCode("PC").id, priceList: "WHOLESALE", price: dp.sellingPrice, createdBy: owner.id } });
+    }
     seededVariants.push({ id: variant.id, sellingPrice: dp.sellingPrice });
   }
 
@@ -793,7 +817,7 @@ async function main() {
   }
 
   console.log(
-    `Seeded branch "${branch.code}", ${units.length} units, ${locations.length} warehouse locations, supplier "${supplier.name}", wholesale customer "${wholesaleCustomer.name}", ${roles.length} test users, ${permissions.length} permission rows, ${demoProducts.length} sample product variants with ACTIVE conversion rates, ${booklets.length} document booklets, ${approvalThresholds.length} approval threshold placeholders.`,
+    `Seeded branch "${branch.code}", ${units.length} units, ${locations.length} warehouse locations, supplier "${supplier.name}", wholesale customer "${wholesaleCustomer.name}", ${roles.length} test users, ${permissions.length} permission rows (+${derivedGrants.created} derived for the three active roles), ${demoProducts.length} sample product variants with ACTIVE conversion rates, ${booklets.length} document booklets, ${approvalThresholds.length} approval threshold placeholders.`,
   );
   console.log(`Dev login: username = any role name lowercase (e.g. "owner"), password = "${DEV_PASSWORD}"`);
 }

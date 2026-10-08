@@ -1,17 +1,22 @@
 import { redirect } from "next/navigation";
 import { getAppSession } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
+import { isOwner } from "@/lib/roleModel";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Card } from "@/components/ui/Card";
-import { LinkButton } from "@/components/ui/LinkButton";
 import { ExportLinks } from "@/components/ui/ExportLinks";
 import { getConsolidatedBranchStockView } from "@/server/application/reporting/consolidatedBranchView";
 import { PermissionDeniedError } from "@/server/domain/rbac/assertPermission";
+import { getSellingUnits } from "@/server/domain/catalog/pricing";
+import { buildCatalogView, parseCatalogFilters } from "./catalogView";
+import { CatalogTree } from "./catalog/CatalogTree";
 
-export default async function InventoryPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+const selectClass = "rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-600 focus:outline-none";
+const filterLabel = "mb-1 block text-xs font-medium text-slate-600";
+
+export default async function InventoryPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const session = await getAppSession();
   if (!session) redirect("/login");
-  const { q } = await searchParams;
+  const filters = parseCatalogFilters(await searchParams);
 
   let balanceRows;
   try {
@@ -21,88 +26,155 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
     throw err;
   }
 
-  const branches = await prisma.branch.findMany({ select: { id: true, code: true, name: true }, orderBy: { code: "asc" } });
+  const [branches, products, categories, units] = await Promise.all([
+    prisma.branch.findMany({ select: { id: true, code: true }, orderBy: { code: "asc" } }),
+    prisma.product.findMany({
+      include: {
+        category: { select: { name: true } },
+        baseUnit: { select: { code: true } },
+        variants: { orderBy: [{ displayOrder: { sort: "asc", nulls: "last" } }, { name: "asc" }, { sku: "asc" }] },
+      },
+    }),
+    prisma.category.findMany({ where: { status: "ACTIVE" }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
+    prisma.unitOfMeasure.findMany({ orderBy: { code: "asc" }, select: { id: true, code: true, name: true } }),
+  ]);
 
-  // getConsolidatedBranchStockView only returns variants with positive stock
-  // somewhere (it's built for the MB-7 "availability at other branches" report).
-  // The catalog browse page needs every active variant, including ones just
-  // added that haven't received their first delivery/adjustment yet — so
-  // start from the full catalog and merge in whatever balances exist.
-  const variants = await prisma.productVariant.findMany({
-    where: { status: "ACTIVE" },
-    select: { id: true, sku: true, product: { select: { name: true } } },
-  });
-  const balanceByVariant = new Map(balanceRows.map((r) => [r.productVariantId, r]));
-  const rows = variants
-    .map((v) => balanceByVariant.get(v.id) ?? { productVariantId: v.id, sku: v.sku, productName: v.product.name, byBranch: {}, totalQuantityOnHand: "0" })
-    .sort((a, b) => a.sku.localeCompare(b.sku));
+  const sellingUnits = await getSellingUnits(
+    prisma,
+    products.flatMap((p) => p.variants.map((v) => v.id)),
+  );
 
-  const query = q?.trim().toLowerCase();
-  const filtered = query
-    ? rows.filter((r) => r.sku.toLowerCase().includes(query) || r.productName.toLowerCase().includes(query))
-    : rows;
+  const stockByVariant = new Map(
+    balanceRows.map((r) => [r.productVariantId, Object.fromEntries(Object.entries(r.byBranch).map(([branchId, b]) => [branchId, Number(b.quantityOnHand)]))]),
+  );
+
+  const rows = buildCatalogView(
+    products.map((p) => ({
+      id: p.id,
+      asin: p.asin,
+      name: p.name,
+      sku: p.sku,
+      brand: p.brand,
+      categoryId: p.categoryId,
+      categoryName: p.category?.name ?? null,
+      description: p.description,
+      notes: p.notes,
+      status: p.status,
+      baseUnitId: p.baseUnitId,
+      baseUnitCode: p.baseUnit.code,
+      children: p.variants.map((v) => ({
+        id: v.id,
+        asin: v.asin,
+        sku: v.sku,
+        name: v.name,
+        variationData: v.variationData,
+        units: (sellingUnits.get(v.id) ?? []).map((u) => ({
+          code: u.unitCode,
+          name: u.unitName,
+          price: u.price?.amount ?? null,
+          baseQtyPerUnit: u.baseQtyPerUnit,
+          pendingBaseQty: u.pendingPackSize?.rate ?? null,
+          isBaseUnit: u.isBaseUnit,
+        })),
+        barcode: v.barcode,
+        notes: v.notes,
+        status: v.status,
+      })),
+    })),
+    stockByVariant,
+    filters,
+  );
+
+  const brands = [...new Set(products.map((p) => p.brand).filter((b): b is string => !!b))].sort((a, b) => a.localeCompare(b));
+  const moveTargets = products
+    .filter((p) => p.status !== "ARCHIVED")
+    .map((p) => ({ id: p.id, asin: p.asin, name: p.name, baseUnitId: p.baseUnitId, baseUnitCode: p.baseUnit.code }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
         title="Inventory"
-        description="Current stock on hand, by product and branch."
-        action={
-          <div className="flex items-center gap-2">
-            <LinkButton href="/inventory/new">Add Product</LinkButton>
-            <ExportLinks reportId="consolidated-branch-view" />
-          </div>
-        }
+        description="Each product holds its variants like a folder. Open a product to see each variant's selling units, prices, and stock by branch."
+        action={<ExportLinks reportId="consolidated-branch-view" />}
       />
 
-      <form method="get" className="mb-4">
-        <input
-          type="text"
-          name="q"
-          defaultValue={q ?? ""}
-          placeholder="Search by SKU or product name…"
-          className="w-full max-w-sm rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-600 focus:outline-none"
-        />
+      <form method="get" className="mb-4 flex flex-wrap items-end gap-3" role="search">
+        <div className="min-w-56 flex-1">
+          <label htmlFor="catalog-q" className={filterLabel}>
+            Search
+          </label>
+          <input
+            id="catalog-q"
+            type="search"
+            name="q"
+            defaultValue={filters.q}
+            placeholder="Product or variant name, SKU, or ASIN…"
+            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-600 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label htmlFor="catalog-view" className={filterLabel}>
+            Show
+          </label>
+          <select id="catalog-view" name="view" defaultValue={filters.view} className={selectClass}>
+            <option value="parents">Products</option>
+            <option value="children">Variants</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="catalog-status" className={filterLabel}>
+            Status
+          </label>
+          <select id="catalog-status" name="status" defaultValue={filters.status} className={selectClass}>
+            <option value="live">Active &amp; inactive</option>
+            <option value="ACTIVE">Active</option>
+            <option value="INACTIVE">Inactive</option>
+            <option value="ARCHIVED">Archived</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="catalog-brand" className={filterLabel}>
+            Brand
+          </label>
+          <select id="catalog-brand" name="brand" defaultValue={filters.brand} className={selectClass}>
+            <option value="">All brands</option>
+            {brands.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="catalog-category" className={filterLabel}>
+            Category
+          </label>
+          <select id="catalog-category" name="category" defaultValue={filters.categoryId} className={selectClass}>
+            <option value="">All categories</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button type="submit" className="rounded-md bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900">
+          Apply
+        </button>
       </form>
 
-      <Card className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="px-4 py-2">SKU</th>
-              <th className="px-4 py-2">Product</th>
-              {branches.map((b) => (
-                <th key={b.id} className="px-4 py-2 text-right">
-                  {b.code}
-                </th>
-              ))}
-              <th className="px-4 py-2 text-right">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td className="px-4 py-3 text-slate-500" colSpan={branches.length + 3}>
-                  No products match that search.
-                </td>
-              </tr>
-            ) : (
-              filtered.map((r) => (
-                <tr key={r.productVariantId} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="px-4 py-2 font-medium text-slate-900">{r.sku}</td>
-                  <td className="px-4 py-2">{r.productName}</td>
-                  {branches.map((b) => (
-                    <td key={b.id} className="px-4 py-2 text-right tabular-nums">
-                      {r.byBranch[b.id]?.quantityOnHand ?? "0"}
-                    </td>
-                  ))}
-                  <td className="px-4 py-2 text-right font-medium tabular-nums">{r.totalQuantityOnHand}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </Card>
+      <CatalogTree
+        key={JSON.stringify(filters)}
+        rows={rows}
+        view={filters.view}
+        branches={branches}
+        categories={categories.map((c) => ({ id: c.id, label: c.name }))}
+        units={units.map((u) => ({ id: u.id, label: `${u.name} (${u.code})` }))}
+        brands={brands}
+        moveTargets={moveTargets}
+        canManage={isOwner(session.user.role)}
+      />
     </div>
   );
 }

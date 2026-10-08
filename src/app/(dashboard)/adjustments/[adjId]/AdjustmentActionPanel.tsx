@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { PinTokenField } from "@/components/PinTokenField";
+import { actsAs, isOwner } from "@/lib/roleModel";
 
 async function postJson(url: string, body: unknown) {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -52,10 +53,11 @@ export function AdjustmentActionPanel({
     }
   }
 
-  const isRequester = currentUser.id === requestedBy;
+  // The Owner is exempt from "requester cannot investigate/approve" — still recorded under their name.
+  const blockedAsRequester = currentUser.id === requestedBy && !isOwner(currentUser.role);
   const cards: React.ReactNode[] = [];
 
-  if (status === "PENDING_INVESTIGATION" && (currentUser.role === "BRANCH_MANAGER" || currentUser.role === "AUDITOR") && !isRequester) {
+  if (status === "PENDING_INVESTIGATION" && actsAs(currentUser.role, "BRANCH_MANAGER", "AUDITOR") && !blockedAsRequester) {
     cards.push(
       <ActionCard key="investigate" title="Investigate">
         <textarea
@@ -85,7 +87,7 @@ export function AdjustmentActionPanel({
     );
   }
 
-  if (status === "PENDING_APPROVAL" && (currentUser.role === "BRANCH_MANAGER" || currentUser.role === "OWNER") && !isRequester) {
+  if (status === "PENDING_APPROVAL" && actsAs(currentUser.role, "BRANCH_MANAGER") && !blockedAsRequester) {
     cards.push(
       <ActionCard key="approve" title="Approve">
         <PinTokenField tokenId={pinTokenId} onTokenIssued={setPinTokenId} />
@@ -113,7 +115,7 @@ export function AdjustmentActionPanel({
     );
   }
 
-  if (status === "APPROVED" && currentUser.role === "ENCODER") {
+  if (status === "APPROVED" && actsAs(currentUser.role, "ENCODER")) {
     cards.push(
       <ActionCard key="post" title="Post to ledger">
         <PinTokenField tokenId={pinTokenId} onTokenIssued={setPinTokenId} />
@@ -150,7 +152,7 @@ export function AdjustmentActionPanel({
     );
   }
 
-  const canVoid = (currentUser.role === "BRANCH_MANAGER" || currentUser.role === "OWNER") && status !== "POSTED" && status !== "VOID";
+  const canVoid = actsAs(currentUser.role, "BRANCH_MANAGER") && status !== "POSTED" && status !== "VOID";
   if (canVoid) {
     cards.push(
       <ActionCard key="void" title="Void this request">

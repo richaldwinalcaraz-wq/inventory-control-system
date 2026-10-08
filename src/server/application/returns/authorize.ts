@@ -4,6 +4,7 @@ import { resolveRequiredApprover } from "../../domain/approval/resolveRequiredAp
 import { requirePostingAuthorization } from "../../domain/session/postingAuthorization";
 import { issueDocumentNumber } from "../../domain/documents/documentNumber";
 import { lockReturnQuantityRow, computeRemainingReturnableQty } from "../../domain/returns/returnQuantity";
+import { satisfiesApproverTier } from "../../../lib/roleModel";
 
 export class OriginalSaleLineNotFoundError extends Error {}
 export class OriginalSaleNotEligibleForReturnError extends Error {}
@@ -114,7 +115,7 @@ export async function issueReturnAuthorization(prisma: PrismaClient, params: Iss
     const estimatedValue = params.requestedQty * originalLine.unitPrice;
 
     const threshold = await resolveRequiredApprover(tx, { branchId: params.branchId, transactionType, value: estimatedValue });
-    if (threshold.requiredApproverRole !== params.actorRole) {
+    if (!satisfiesApproverTier(params.actorRole, threshold.requiredApproverRole)) {
       throw new WrongReturnApproverRoleError(
         `This return (≈₱${estimatedValue.toFixed(2)}, ${transactionType}) requires ${threshold.requiredApproverRole} approval, not ${params.actorRole}.`,
       );

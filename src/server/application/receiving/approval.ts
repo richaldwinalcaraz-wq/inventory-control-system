@@ -3,6 +3,7 @@ import { assertPermission } from "../../domain/rbac/assertPermission";
 import { resolveRequiredApprover } from "../../domain/approval/resolveRequiredApprover";
 import { requirePostingAuthorization } from "../../domain/session/postingAuthorization";
 import { ReceivingReportNotFoundError, InvalidReceivingReportStateError } from "./draft";
+import { satisfiesApproverTier } from "../../../lib/roleModel";
 
 export class SupplierCallbackRequiredError extends Error {}
 export class WrongApproverRoleError extends Error {}
@@ -49,7 +50,7 @@ export async function approveReceivingReport(prisma: PrismaClient, params: Appro
       transactionType: "RECEIVING",
       value: totalValue,
     });
-    if (threshold.requiredApproverRole !== params.actorRole) {
+    if (!satisfiesApproverTier(params.actorRole, threshold.requiredApproverRole)) {
       throw new WrongApproverRoleError(
         `This receiving report (value=${totalValue}) requires ${threshold.requiredApproverRole} approval, not ${params.actorRole}.`,
       );

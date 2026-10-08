@@ -2,6 +2,7 @@ import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { markCycleCountScheduleCounted } from "./schedule";
 import { CycleCountRecordNotFoundError, InvalidCycleCountRecordStateError, CycleCountSlipAlreadySubmittedError } from "./submitCount";
+import { isOwner } from "../../../lib/roleModel";
 
 export class RecounterMustDifferFromPriorCountersError extends Error {}
 
@@ -26,7 +27,7 @@ export interface SubmitCycleCountRecountParams {
  */
 export async function submitCycleCountRecount(prisma: PrismaClient, params: SubmitCycleCountRecountParams) {
   await assertPermission(prisma, { role: params.actorRole, action: "cycle-count.recount.create" });
-  if (params.collectedBy && params.collectedBy === params.actorUserId) {
+  if (!isOwner(params.actorRole) && params.collectedBy && params.collectedBy === params.actorUserId) {
     throw new RecounterMustDifferFromPriorCountersError("G-24: the person who collected the count sheet must not be the counter themself.");
   }
 
@@ -42,7 +43,7 @@ export async function submitCycleCountRecount(prisma: PrismaClient, params: Subm
   const priorSlips = await prisma.countSlip.findMany({
     where: { referenceType: "CycleCountRecord", referenceId: record.id, role: { in: ["CYCLE_COUNT_PRIMARY", "CYCLE_COUNT_SECONDARY", "TIEBREAK"] } },
   });
-  if (priorSlips.some((s) => s.countedBy === params.actorUserId)) {
+  if (!isOwner(params.actorRole) && priorSlips.some((s) => s.countedBy === params.actorUserId)) {
     throw new RecounterMustDifferFromPriorCountersError("The recount must be performed by someone who did not already count this item (primary, secondary, or tie-break).");
   }
 
