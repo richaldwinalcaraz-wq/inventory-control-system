@@ -1,5 +1,6 @@
 import type { PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
+import { getBaseUnitPrices } from "../../domain/catalog/pricing";
 
 export class SalesOrderNotFoundError extends Error {}
 export class InvalidSalesOrderStateError extends Error {}
@@ -15,7 +16,8 @@ export interface DraftSalesOrderParams {
 }
 
 /**
- * Order intake. List price at draft time, same snapshot discipline as
+ * Order intake. WHOLESALE base-unit list price at draft time (refused if
+ * the item has none), same snapshot discipline as
  * Retail — Orders/CRM is explicitly a future module (business-process-
  * design.md sec.1.4), so this is the minimal internal stand-in Inventory
  * needs to drive reservation/pick/check/release, not a real quoting flow.
@@ -28,8 +30,7 @@ export async function draftSalesOrder(prisma: PrismaClient, params: DraftSalesOr
   }
 
   const variantIds = params.lines.map((l) => l.productVariantId);
-  const variants = await prisma.productVariant.findMany({ where: { id: { in: variantIds } } });
-  const priceByVariant = new Map(variants.map((v) => [v.id, v.sellingPrice]));
+  const priceByVariant = await getBaseUnitPrices(prisma, variantIds, { priceList: "WHOLESALE", branchId: params.branchId });
 
   return prisma.salesOrder.create({
     data: {
@@ -42,7 +43,7 @@ export async function draftSalesOrder(prisma: PrismaClient, params: DraftSalesOr
         create: params.lines.map((l) => ({
           productVariantId: l.productVariantId,
           orderedQty: l.orderedQty,
-          unitPrice: priceByVariant.get(l.productVariantId) ?? 0,
+          unitPrice: priceByVariant.get(l.productVariantId)!,
         })),
       },
     },

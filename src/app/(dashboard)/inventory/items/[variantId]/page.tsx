@@ -104,7 +104,8 @@ export default async function VariantDetailPage({ params }: { params: Promise<{ 
     unitName: u.unitName,
     isBaseUnit: u.isBaseUnit,
     baseQtyPerUnit: u.baseQtyPerUnit,
-    price: u.price?.amount ?? null,
+    price: u.pricesByList.WHOLESALE?.amount ?? null,
+    retailPrice: u.pricesByList.RETAIL?.amount ?? null,
     pending: u.pendingPackSize
       ? {
           conversionRateVersionId: u.pendingPackSize.conversionRateVersionId,

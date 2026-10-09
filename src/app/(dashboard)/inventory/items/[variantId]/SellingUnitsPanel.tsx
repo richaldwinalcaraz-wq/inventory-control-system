@@ -13,7 +13,10 @@ export interface PanelUnit {
   unitName: string;
   isBaseUnit: boolean;
   baseQtyPerUnit: number | null;
+  /** Current all-branch WHOLESALE price. */
   price: string | null;
+  /** Current all-branch RETAIL price. */
+  retailPrice: string | null;
   pending: { conversionRateVersionId: string; rate: number; checksDone: number; canCheck: boolean } | null;
 }
 
@@ -21,7 +24,7 @@ type Editing = { kind: "price"; unit: PanelUnit } | { kind: "size"; unit: PanelU
 
 const fmt = (n: number) => n.toLocaleString("en-PH", { maximumFractionDigits: 4 });
 
-/** The variant's selling units: what it's sold in, how big each unit is, and its wholesale price. */
+/** The variant's selling units: what it's sold in, how big each unit is, and its wholesale and retail prices. */
 export function SellingUnitsPanel({
   variantId,
   baseUnit,
@@ -38,6 +41,7 @@ export function SellingUnitsPanel({
   const router = useRouter();
   const [editing, setEditing] = useState<Editing>(null);
   const [price, setPrice] = useState("");
+  const [retail, setRetail] = useState("");
   const [qty, setQty] = useState("");
   const [unitId, setUnitId] = useState(addableUnits[0]?.id ?? "");
   const [pending, setPending] = useState(false);
@@ -47,14 +51,16 @@ export function SellingUnitsPanel({
     setEditing(next);
     setMessage(null);
     setPrice(next?.kind === "price" && next.unit.price ? String(Number(next.unit.price)) : "");
+    setRetail(next?.kind === "price" && next.unit.retailPrice ? String(Number(next.unit.retailPrice)) : "");
     setQty(next?.kind === "size" ? String(next.unit.pending?.rate ?? next.unit.baseQtyPerUnit ?? "") : "");
   }
 
-  async function run(url: string, body: unknown, ok: string) {
+  /** Runs one or more POSTs in order; stops at the first failure. */
+  async function run(calls: Array<[url: string, body: unknown]>, ok: string) {
     setPending(true);
     setMessage(null);
     try {
-      await sendJson(url, "POST", body);
+      for (const [url, body] of calls) await sendJson(url, "POST", body);
       setEditing(null);
       setMessage({ tone: "ok", text: ok });
       router.refresh();
@@ -68,13 +74,23 @@ export function SellingUnitsPanel({
   function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!editing) return;
+    const prices = `/api/v1/catalog/children/${variantId}/prices`;
     if (editing.kind === "price") {
-      void run(`/api/v1/catalog/children/${variantId}/prices`, { unitId: editing.unit.unitId, price: Number(price) }, `${editing.unit.unitName} price saved. The old price stays in the history.`);
+      const u = editing.unit;
+      const calls: Array<[string, unknown]> = [];
+      if (price.trim() === "") {
+        if (u.price) calls.push([`${prices}/remove`, { unitId: u.unitId, priceList: "WHOLESALE" }]);
+      } else calls.push([prices, { unitId: u.unitId, priceList: "WHOLESALE", price: Number(price) }]);
+      if (retail.trim() === "") {
+        if (u.retailPrice) calls.push([`${prices}/remove`, { unitId: u.unitId, priceList: "RETAIL" }]);
+      } else calls.push([prices, { unitId: u.unitId, priceList: "RETAIL", price: Number(retail) }]);
+      void run(calls, `${u.unitName} prices saved. Old prices stay in the history.`);
     } else if (editing.kind === "size") {
-      void run(`/api/v1/catalog/children/${variantId}/pack-sizes`, { unitId: editing.unit.unitId, baseQtyPerUnit: Number(qty) }, `New ${editing.unit.unitName.toLowerCase()} size proposed — it counts once two people have checked it.`);
+      void run([[`/api/v1/catalog/children/${variantId}/pack-sizes`, { unitId: editing.unit.unitId, baseQtyPerUnit: Number(qty) }]], `New ${editing.unit.unitName.toLowerCase()} size proposed — it counts once two people have checked it.`);
     } else {
       const unit = addableUnits.find((u) => u.id === unitId);
-      void run(`/api/v1/catalog/children/${variantId}/selling-units`, { unitId, baseQtyPerUnit: Number(qty), price: Number(price) }, `${unit?.name ?? "Unit"} added. Its size counts once two people have checked it.`);
+      const body = { unitId, baseQtyPerUnit: Number(qty), price: Number(price), ...(retail.trim() !== "" ? { retailPrice: Number(retail) } : {}) };
+      void run([[`/api/v1/catalog/children/${variantId}/selling-units`, body]], `${unit?.name ?? "Unit"} added. Its size counts once two people have checked it.`);
     }
   }
 
@@ -83,7 +99,7 @@ export function SellingUnitsPanel({
   return (
     <Card className="mb-6 overflow-x-auto">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
-        <h2 className="text-sm font-semibold text-slate-900">Selling units &amp; wholesale prices</h2>
+        <h2 className="text-sm font-semibold text-slate-900">Selling units &amp; prices</h2>
         {canManage && addableUnits.length > 0 && editing?.kind !== "add" ? (
           <button type="button" onClick={() => open({ kind: "add" })} className="text-sm font-medium text-brand-700 hover:underline">
             + Add selling unit
@@ -102,7 +118,8 @@ export function SellingUnitsPanel({
           <tr>
             <th className="px-4 py-2">Unit</th>
             <th className="px-4 py-2">Contains</th>
-            <th className="px-4 py-2 text-right">Price</th>
+            <th className="px-4 py-2 text-right">Wholesale</th>
+            <th className="px-4 py-2 text-right">Retail</th>
             {canManage ? <th className="px-4 py-2" /> : null}
           </tr>
         </thead>
@@ -135,23 +152,29 @@ export function SellingUnitsPanel({
                   </div>
                 )}
               </td>
-              <td className="px-4 py-2 text-right tabular-nums">{u.price ? <span className="font-medium text-slate-900">{peso(u.price)}</span> : <span className="text-slate-400">Not sold this way</span>}</td>
+              <td className="px-4 py-2 text-right tabular-nums">{u.price ? <span className="font-medium text-slate-900">{peso(u.price)}</span> : <span className="text-slate-400">Not sold</span>}</td>
+              <td className="px-4 py-2 text-right tabular-nums">{u.retailPrice ? <span className="font-medium text-slate-900">{peso(u.retailPrice)}</span> : <span className="text-slate-400">Not sold</span>}</td>
               {canManage ? (
                 <td className="px-4 py-2">
                   <div className="flex justify-end gap-3 whitespace-nowrap text-sm">
                     <button type="button" onClick={() => open({ kind: "price", unit: u })} className="font-medium text-slate-700 hover:underline">
-                      {u.price ? "Change price" : "Set price"}
+                      {u.price || u.retailPrice ? "Change prices" : "Set prices"}
                     </button>
                     {u.isBaseUnit ? null : (
                       <button type="button" onClick={() => open({ kind: "size", unit: u })} className="font-medium text-slate-700 hover:underline">
                         Change size
                       </button>
                     )}
-                    {u.price ? (
+                    {u.price || u.retailPrice ? (
                       <button
                         type="button"
                         disabled={pending}
-                        onClick={() => run(`/api/v1/catalog/children/${variantId}/prices/remove`, { unitId: u.unitId }, `No longer sold by the ${u.unitName.toLowerCase()}.`)}
+                        onClick={() =>
+                          run(
+                            (["WHOLESALE", "RETAIL"] as const).map((priceList): [string, unknown] => [`/api/v1/catalog/children/${variantId}/prices/remove`, { unitId: u.unitId, priceList }]),
+                            `No longer sold by the ${u.unitName.toLowerCase()}.`,
+                          )
+                        }
                         className="font-medium text-red-700 hover:underline disabled:opacity-50"
                       >
                         Stop selling
@@ -190,12 +213,20 @@ export function SellingUnitsPanel({
             </div>
           ) : null}
           {editing.kind !== "size" ? (
-            <div>
-              <label htmlFor="su-price" className={labelClass}>
-                Price per {unitLabel} (₱) *
-              </label>
-              <input id="su-price" type="number" min="0.01" step="0.01" required value={price} onChange={(e) => setPrice(e.target.value)} className={`${inputClass} w-36`} />
-            </div>
+            <>
+              <div>
+                <label htmlFor="su-price" className={labelClass}>
+                  Wholesale per {unitLabel} (₱){editing.kind === "add" ? " *" : ""}
+                </label>
+                <input id="su-price" type="number" min="0.01" step="0.01" required={editing.kind === "add"} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Not sold" className={`${inputClass} w-36`} />
+              </div>
+              <div>
+                <label htmlFor="su-retail" className={labelClass}>
+                  Retail per {unitLabel} (₱)
+                </label>
+                <input id="su-retail" type="number" min="0.01" step="0.01" value={retail} onChange={(e) => setRetail(e.target.value)} placeholder="Not sold" className={`${inputClass} w-36`} />
+              </div>
+            </>
           ) : null}
           <div className="flex gap-2">
             <button type="button" onClick={() => setEditing(null)} className={secondaryButton}>
@@ -206,6 +237,16 @@ export function SellingUnitsPanel({
             </button>
           </div>
           {editing.kind !== "price" ? <p className="w-full text-xs text-slate-500">A new size only counts after two people other than you open one and confirm the count.</p> : null}
+          {editing.kind !== "size" && price !== "" && retail !== "" && Number(retail) < Number(price) ? (
+            <p className="w-full rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">Retail is lower than wholesale. Check this isn&apos;t a typo.</p>
+          ) : null}
+          {editing.kind === "price" ? <p className="w-full text-xs text-slate-500">Leave a box empty if it isn&apos;t sold that way.</p> : null}
+          {editing.kind === "price" && ((editing.unit.price && price.trim() === "") || (editing.unit.retailPrice && retail.trim() === "")) ? (
+            <p role="alert" className="w-full rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Saving with an empty box stops selling by the {editing.unit.unitName.toLowerCase()} at{" "}
+              {[editing.unit.price && price.trim() === "" ? "wholesale" : null, editing.unit.retailPrice && retail.trim() === "" ? "retail" : null].filter(Boolean).join(" and ")}.
+            </p>
+          ) : null}
         </form>
       ) : null}
     </Card>

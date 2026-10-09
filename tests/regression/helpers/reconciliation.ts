@@ -3,9 +3,20 @@
 import type { PrismaClient } from "@prisma/client";
 import { getUserByRole } from "./receiving";
 
-/** Spreads fixture businessDates across ~13 years so @@unique([branchId, businessDate]) never collides across repeated suite runs on the same calendar day. */
-export function uniqueBusinessDate(): Date {
-  return new Date(Date.now() - Math.floor(Math.random() * 5000) * 86400000);
+/**
+ * A past calendar day (UTC midnight, matching the @db.Date column) with no
+ * DailyReconciliation yet for this branch. Checked against the database
+ * rather than trusting randomness: the shared test DB keeps every run's rows,
+ * so a random pick from a fixed range collides more often with every run.
+ */
+export async function unusedBusinessDate(prisma: PrismaClient, branchId: string): Promise<Date> {
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const day = new Date(todayUtc - (1 + Math.floor(Math.random() * 20000)) * 86_400_000);
+    if (!(await prisma.dailyReconciliation.findFirst({ where: { branchId, businessDate: day }, select: { id: true } }))) return day;
+  }
+  throw new Error(`No free reconciliation date found for branch ${branchId} after 200 tries.`);
 }
 
 export async function createReconciliationLine(
@@ -17,7 +28,7 @@ export async function createReconciliationLine(
   const reconciliation = await prisma.dailyReconciliation.create({
     data: {
       branchId: params.branchId,
-      businessDate: params.businessDate ?? uniqueBusinessDate(),
+      businessDate: params.businessDate ?? (await unusedBusinessDate(prisma, params.branchId)),
       preparedBy: auditor.id,
       ...(params.signedOff ? { signedOffBy: auditor.id, signedOffAt: new Date() } : {}),
     },

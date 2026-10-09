@@ -807,3 +807,10 @@ Quantity -> Price -> Subtotal picker. Until the client answers the open
 questions, 109 sack sizes are pending (sacks can't be sold yet, rims can),
 and ~40 rows have a missing price for one unit. Branch-specific prices are
 supported by the API but have no screen yet.
+
+**Retail prices (2026-10-09).** The Owner sets wholesale and retail prices
+per unit from a "Prices" button on each variant row (`PricesModal.tsx`; blank
+= not sold that way on that list) or on the item page. Retail never touches
+the legacy `sellingPrice`, which mirrors wholesale only. `/price-list` has a
+Wholesale / Retail switch (`?list=retail`). Entering retail below wholesale
+shows a warning but is allowed.

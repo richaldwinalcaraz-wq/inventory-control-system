@@ -17,15 +17,10 @@ import { describe, it, expect } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import { submitBinCardCapture, BinCardPhotoRequiredError, AlreadySignedOffError } from "../../src/server/application/reconciliation/captureBinCard";
 import { getIloBranch, getSeedVariant, getUserByRole } from "./helpers/receiving";
+import { unusedBusinessDate } from "./helpers/reconciliation";
 
 const prisma = new PrismaClient();
 
-function uniqueBusinessDate(): Date {
-  // Spreads fixture businessDates across ~13 years so @@unique([branchId,
-  // businessDate]) never collides across repeated suite runs on the same
-  // calendar day.
-  return new Date(Date.now() - Math.floor(Math.random() * 5000) * 86400000);
-}
 
 async function createReconciliationLine(branchId: string, variantId: string, systemExpectedClosingQty: number, signedOff = false) {
   const auditor = await getUserByRole(prisma, "auditor");
@@ -33,7 +28,7 @@ async function createReconciliationLine(branchId: string, variantId: string, sys
   const reconciliation = await prisma.dailyReconciliation.create({
     data: {
       branchId,
-      businessDate: uniqueBusinessDate(),
+      businessDate: await unusedBusinessDate(prisma, branchId),
       preparedBy: auditor.id,
       ...(signedOff ? { signedOffBy: auditor.id, signedOffAt: new Date() } : {}),
     },

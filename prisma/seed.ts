@@ -528,11 +528,13 @@ async function main() {
         effectiveFrom: new Date(),
       },
     });
-    // Base-unit wholesale price (src/server/domain/catalog/pricing.ts). Skipped
-    // if one is already current, so re-seeding never duplicates it.
-    const hasBasePrice = await prisma.variantPrice.count({ where: { productVariantId: variant.id, unitId: unitByCode("PC").id, priceList: "WHOLESALE", branchId: null, supersededAt: null } });
-    if (hasBasePrice === 0) {
-      await prisma.variantPrice.create({ data: { productVariantId: variant.id, unitId: unitByCode("PC").id, priceList: "WHOLESALE", price: dp.sellingPrice, createdBy: owner.id } });
+    // Base-unit wholesale and retail prices (src/server/domain/catalog/pricing.ts).
+    // Skipped if already current, so re-seeding never duplicates them.
+    for (const priceList of ["WHOLESALE", "RETAIL"] as const) {
+      const current = await prisma.variantPrice.count({ where: { productVariantId: variant.id, unitId: unitByCode("PC").id, priceList, branchId: null, supersededAt: null } });
+      if (current === 0) {
+        await prisma.variantPrice.create({ data: { productVariantId: variant.id, unitId: unitByCode("PC").id, priceList, price: dp.sellingPrice, createdBy: owner.id } });
+      }
     }
     seededVariants.push({ id: variant.id, sellingPrice: dp.sellingPrice });
   }

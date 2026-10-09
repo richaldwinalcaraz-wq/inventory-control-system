@@ -3,8 +3,10 @@ import type { PriceList, PrismaClient, RoleName } from "@prisma/client";
 import { assertPermission } from "../../domain/rbac/assertPermission";
 import { proposeConversionRate, verifyConversionRate, ConversionRateVerificationError } from "../../domain/catalog/conversionRate";
 import { CatalogRecordArchivedError, CatalogRecordNotFoundError, writeCatalogAudit } from "./shared";
+import { MAX_PRICE } from "../../../lib/money";
 
 export class PackSizeRequiredError extends Error {}
+export class InvalidPriceError extends Error {}
 
 interface Actor {
   actorRole: RoleName;
@@ -43,6 +45,10 @@ async function hasPackSize(tx: Prisma.TransactionClient, productVariantId: strin
 }
 
 async function setPriceTx(tx: Prisma.TransactionClient, params: Actor & PriceKey & { price: number }) {
+  // Enforced here, not only at the HTTP boundary, so no caller can save a free or absurd price.
+  if (!Number.isFinite(params.price) || params.price <= 0 || params.price > MAX_PRICE || Math.round(params.price * 100) !== params.price * 100) {
+    throw new InvalidPriceError(`A price must be above ₱0 with at most 2 decimals (got ${params.price}).`);
+  }
   const variant = await lockVariant(tx, params.productVariantId);
   const unit = await requireUnit(tx, params.unitId);
   const baseUnitId = variant.product.baseUnitId;
@@ -148,13 +154,17 @@ export async function proposePackSize(prisma: PrismaClient, params: Actor & { pr
   return prisma.$transaction((tx) => proposePackSizeTx(tx, params));
 }
 
-/** Adds a new selling unit in one step: its pack size (pending until checked) and its price. Owner only. */
-export async function addSellingUnit(prisma: PrismaClient, params: Actor & { productVariantId: string; unitId: string; baseQtyPerUnit: number; price: number; priceList?: PriceList }) {
+/** Adds a new selling unit in one transaction: its pack size (pending until checked), its wholesale price and, optionally, its retail price. Owner only. */
+export async function addSellingUnit(
+  prisma: PrismaClient,
+  params: Actor & { productVariantId: string; unitId: string; baseQtyPerUnit: number; price: number; retailPrice?: number },
+) {
   await assertPermission(prisma, { role: params.actorRole, action: "inventory.price.update" });
   return prisma.$transaction(async (tx) => {
     const packSize = await proposePackSizeTx(tx, params);
-    const price = await setPriceTx(tx, params);
-    return { packSize, price };
+    const price = await setPriceTx(tx, { ...params, priceList: "WHOLESALE" });
+    const retailPrice = params.retailPrice !== undefined ? await setPriceTx(tx, { ...params, priceList: "RETAIL", price: params.retailPrice }) : null;
+    return { packSize, price, retailPrice };
   });
 }
 

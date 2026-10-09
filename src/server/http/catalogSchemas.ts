@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { MAX_PRICE } from "@/lib/money";
 
 // Shared request shapes for /api/v1/catalog/*. Strict: unknown fields are rejected.
 const optionalText = (max: number) => z.string().max(max).nullable().optional();
 const optionalAsin = z.string().max(20).nullable().optional();
 /** Pesos, up to 2 decimal places. */
-export const money = z.number().positive().max(9_999_999_999).multipleOf(0.01);
+export const money = z.number().positive().max(MAX_PRICE).multipleOf(0.01);
 const editableStatus = z.enum(["ACTIVE", "INACTIVE"]);
 const variationData = z
   .record(z.string().min(1).max(40), z.string().max(80))
@@ -66,5 +67,6 @@ const baseQtyPerUnit = z.number().positive().max(1_000_000).multipleOf(0.0001);
 export const setPriceSchema = z.object({ unitId: z.string().min(1), price: money, ...priceScope }).strict();
 export const removePriceSchema = z.object({ unitId: z.string().min(1), ...priceScope }).strict();
 export const proposePackSizeSchema = z.object({ unitId: z.string().min(1), baseQtyPerUnit }).strict();
-export const addSellingUnitSchema = z.object({ unitId: z.string().min(1), baseQtyPerUnit, price: money, priceList: priceScope.priceList }).strict();
+/** price = wholesale; retailPrice optional — both saved in one transaction with the pack size. */
+export const addSellingUnitSchema = z.object({ unitId: z.string().min(1), baseQtyPerUnit, price: money, retailPrice: money.optional() }).strict();
 export const rejectPackSizeSchema = z.object({ countedBaseQty: baseQtyPerUnit, note: optionalText(500) }).strict();

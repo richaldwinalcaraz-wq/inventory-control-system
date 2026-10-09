@@ -178,7 +178,7 @@ import { InvalidAsinError, ParentAsinExistsError, ChildAsinExistsError } from ".
 import { CatalogRecordNotFoundError, CatalogRecordArchivedError, DuplicateCatalogSkuError } from "../application/catalog/shared";
 import { ParentHasChildrenError } from "../application/catalog/parentAsins";
 import { ProductStillInUseError, IncompatibleParentError } from "../application/catalog/childAsins";
-import { PackSizeRequiredError } from "../application/catalog/sellingUnits";
+import { PackSizeRequiredError, InvalidPriceError } from "../application/catalog/sellingUnits";
 import { NoPriceForUnitError, PackSizeNotConfirmedError } from "../domain/catalog/pricing";
 import { PriceListImportRejectedError } from "../application/catalog/importPriceList";
 
@@ -369,6 +369,7 @@ const CATALOG: Array<[new (...args: never[]) => Error, number, string]> = [
   [ProductStillInUseError, 409, "PRODUCT_STILL_IN_USE"],
   [IncompatibleParentError, 409, "INCOMPATIBLE_PARENT"],
   [PackSizeRequiredError, 409, "PACK_SIZE_REQUIRED"],
+  [InvalidPriceError, 400, "INVALID_PRICE"],
   [NoPriceForUnitError, 409, "NO_PRICE_FOR_UNIT"],
   [PackSizeNotConfirmedError, 409, "PACK_SIZE_NOT_CONFIRMED"],
   [PriceListImportRejectedError, 409, "PRICE_LIST_IMPORT_REJECTED"],

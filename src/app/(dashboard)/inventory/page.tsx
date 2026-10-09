@@ -39,10 +39,8 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
     prisma.unitOfMeasure.findMany({ orderBy: { code: "asc" }, select: { id: true, code: true, name: true } }),
   ]);
 
-  const sellingUnits = await getSellingUnits(
-    prisma,
-    products.flatMap((p) => p.variants.map((v) => v.id)),
-  );
+  const variantIds = products.flatMap((p) => p.variants.map((v) => v.id));
+  const sellingUnits = await getSellingUnits(prisma, variantIds);
 
   const stockByVariant = new Map(
     balanceRows.map((r) => [r.productVariantId, Object.fromEntries(Object.entries(r.byBranch).map(([branchId, b]) => [branchId, Number(b.quantityOnHand)]))]),
@@ -69,9 +67,11 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
         name: v.name,
         variationData: v.variationData,
         units: (sellingUnits.get(v.id) ?? []).map((u) => ({
+          unitId: u.unitId,
           code: u.unitCode,
           name: u.unitName,
-          price: u.price?.amount ?? null,
+          price: u.pricesByList.WHOLESALE?.amount ?? null,
+          retailPrice: u.pricesByList.RETAIL?.amount ?? null,
           baseQtyPerUnit: u.baseQtyPerUnit,
           pendingBaseQty: u.pendingPackSize?.rate ?? null,
           isBaseUnit: u.isBaseUnit,

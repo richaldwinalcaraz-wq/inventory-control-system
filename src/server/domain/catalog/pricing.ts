@@ -41,7 +41,11 @@ export interface SellingUnit {
   baseQtyPerUnit: number | null;
   activePackSize: PackSizeInfo | null;
   pendingPackSize: PendingPackSizeInfo | null;
+  /** Current price on the scope's price list (default WHOLESALE). */
   price: CurrentPrice | null;
+  /** Current price on every price list, e.g. for showing wholesale and retail side by side. */
+  pricesByList: Partial<Record<PriceList, CurrentPrice>>;
+  /** Has a price on the scope's list and a confirmed size (or is the base unit). */
   sellable: boolean;
 }
 
@@ -51,7 +55,7 @@ export interface PriceScope {
   branchId?: string | null;
 }
 
-/** Every selling unit of each variant (base unit always included), largest unit first. */
+/** Every selling unit of each variant (base unit, any unit with a pack size, any unit priced on any list), largest unit first. */
 export async function getSellingUnits(db: Db, productVariantIds: string[], scope: PriceScope = {}): Promise<Map<string, SellingUnit[]>> {
   const result = new Map<string, SellingUnit[]>();
   if (productVariantIds.length === 0) return result;
@@ -64,7 +68,7 @@ export async function getSellingUnits(db: Db, productVariantIds: string[], scope
       select: { id: true, product: { select: { baseUnit: { select: { id: true, code: true, name: true } } } } },
     }),
     db.variantPrice.findMany({
-      where: { productVariantId: { in: productVariantIds }, priceList, supersededAt: null, OR: [{ branchId: null }, ...(branchId ? [{ branchId }] : [])] },
+      where: { productVariantId: { in: productVariantIds }, supersededAt: null, OR: [{ branchId: null }, ...(branchId ? [{ branchId }] : [])] },
       include: { unit: { select: { id: true, code: true, name: true } } },
     }),
     db.conversionRateVersion.findMany({
@@ -81,7 +85,7 @@ export async function getSellingUnits(db: Db, productVariantIds: string[], scope
       let row = units.get(u.id);
       if (!row) {
         const isBaseUnit = u.id === base.id;
-        row = { unitId: u.id, unitCode: u.code, unitName: u.name, isBaseUnit, baseQtyPerUnit: isBaseUnit ? 1 : null, activePackSize: null, pendingPackSize: null, price: null, sellable: false };
+        row = { unitId: u.id, unitCode: u.code, unitName: u.name, isBaseUnit, baseQtyPerUnit: isBaseUnit ? 1 : null, activePackSize: null, pendingPackSize: null, price: null, pricesByList: {}, sellable: false };
         units.set(u.id, row);
       }
       return row;
@@ -104,11 +108,15 @@ export async function getSellingUnits(db: Db, productVariantIds: string[], scope
       if (p.productVariantId !== variant.id) continue;
       const row = unitFor(p.unit);
       // A branch override beats the all-branch price for that branch.
-      if (row.price && row.price.branchId && !p.branchId) continue;
-      row.price = { variantPriceId: p.id, amount: p.price.toFixed(2), branchId: p.branchId, effectiveFrom: p.effectiveFrom };
+      const existing = row.pricesByList[p.priceList];
+      if (existing && existing.branchId && !p.branchId) continue;
+      row.pricesByList[p.priceList] = { variantPriceId: p.id, amount: p.price.toFixed(2), branchId: p.branchId, effectiveFrom: p.effectiveFrom };
     }
 
-    const rows = [...units.values()].map((r) => ({ ...r, sellable: !!r.price && r.baseQtyPerUnit !== null }));
+    const rows = [...units.values()].map((r) => {
+      const price = r.pricesByList[priceList] ?? null;
+      return { ...r, price, sellable: !!price && r.baseQtyPerUnit !== null };
+    });
     const size = (r: SellingUnit) => r.baseQtyPerUnit ?? r.pendingPackSize?.rate ?? 0;
     rows.sort((a, b) => size(b) - size(a) || a.unitCode.localeCompare(b.unitCode));
     result.set(variant.id, rows);
@@ -162,4 +170,23 @@ export async function quoteLine(db: Db, params: QuoteLineParams): Promise<Quoted
     baseQuantity: qty.mul(unit.baseQtyPerUnit).toString(),
     conversionRateVersionId: unit.activePackSize?.conversionRateVersionId ?? null,
   };
+}
+
+/**
+ * Current base-unit price per variant on one price list (branch override
+ * first). Throws NoPriceForUnitError naming the first variant without one —
+ * a sale must never be snapshotted at ₱0 because a price is missing.
+ */
+export async function getBaseUnitPrices(db: Db, productVariantIds: string[], scope: PriceScope = {}): Promise<Map<string, string>> {
+  const units = await getSellingUnits(db, productVariantIds, scope);
+  const result = new Map<string, string>();
+  for (const id of productVariantIds) {
+    const base = units.get(id)?.find((u) => u.isBaseUnit);
+    if (!base?.price) {
+      const variant = await db.productVariant.findUnique({ where: { id }, select: { sku: true, name: true } });
+      throw new NoPriceForUnitError(`${variant?.name ?? variant?.sku ?? id} has no ${scope.priceList ?? "WHOLESALE"} price yet — the Owner must set one before it can be sold.`);
+    }
+    result.set(id, base.price.amount);
+  }
+  return result;
 }

@@ -9,6 +9,7 @@ import { applyPriceListImport, PriceListImportRejectedError } from "../../src/se
 import { getSellingUnits, quoteLine, NoPriceForUnitError, PackSizeNotConfirmedError } from "../../src/server/domain/catalog/pricing";
 import { addSellingUnit, confirmPackSize, rejectPackSize, removeVariantPrice, setVariantPrice, PackSizeRequiredError } from "../../src/server/application/catalog/sellingUnits";
 import { getProductMaster } from "../../src/server/application/catalog/productMaster";
+import { draftRetailSale } from "../../src/server/application/retail/draft";
 import { createParentAsin } from "../../src/server/application/catalog/parentAsins";
 import { addChildAsin } from "../../src/server/application/catalog/childAsins";
 import { ConversionRateVerificationError } from "../../src/server/domain/catalog/conversionRate";
@@ -191,6 +192,47 @@ describe("Price list — import, prices and pack sizes", () => {
     await Promise.all([101, 102, 103, 104, 105].map((price) => setVariantPrice(prisma, { actorRole: "OWNER", actorUserId: owner.id, productVariantId: k9.id, unitId: units.RIM!, price })));
     expect(await prisma.variantPrice.count({ where: { productVariantId: k9.id, unitId: units.RIM!, supersededAt: null } })).toBe(1);
     expect(await prisma.variantPrice.count({ where: { productVariantId: k9.id, unitId: units.RIM! } })).toBe(6);
+  });
+
+  it("[price] retail and wholesale prices are separate: setting or removing retail never touches wholesale or the legacy price", async () => {
+    const { k9, units, owner } = await importSample();
+    const actor = { actorRole: "OWNER" as const, actorUserId: owner.id };
+    await setVariantPrice(prisma, { ...actor, productVariantId: k9.id, unitId: units.RIM!, priceList: "RETAIL", price: 120 });
+    await setVariantPrice(prisma, { ...actor, productVariantId: k9.id, unitId: units.SACK!, priceList: "RETAIL", price: 4500 });
+
+    expect((await quoteLine(prisma, { productVariantId: k9.id, unitId: units.RIM!, quantity: 2, priceList: "RETAIL" })).lineTotal).toBe("240.00");
+    expect((await quoteLine(prisma, { productVariantId: k9.id, unitId: units.RIM!, quantity: 2 })).lineTotal).toBe("200.00");
+    expect(Number((await prisma.productVariant.findUniqueOrThrow({ where: { id: k9.id } })).sellingPrice)).toBe(100);
+    const retailSack = (await getSellingUnits(prisma, [k9.id], { priceList: "RETAIL" })).get(k9.id)!.find((u) => u.unitCode === "SACK")!;
+    expect(retailSack).toMatchObject({ price: { amount: "4500.00" }, sellable: false });
+
+    await removeVariantPrice(prisma, { ...actor, productVariantId: k9.id, unitId: units.RIM!, priceList: "RETAIL" });
+    await expect(quoteLine(prisma, { productVariantId: k9.id, unitId: units.RIM!, quantity: 1, priceList: "RETAIL" })).rejects.toThrow(NoPriceForUnitError);
+    expect((await quoteLine(prisma, { productVariantId: k9.id, unitId: units.RIM!, quantity: 1 })).unitPrice).toBe("100.00");
+  });
+
+  it("[sell] a retail sale charges the RETAIL price, and an item with no retail price is refused instead of sold at ₱0", async () => {
+    const { k9, units, owner } = await importSample();
+    const [cashier, ilo] = await Promise.all([getUserByRole(prisma, "cashier"), getIloBranch(prisma)]);
+    const sale = (lines: Array<{ productVariantId: string; quantity: number }>) => draftRetailSale(prisma, { actorUserId: cashier.id, actorRole: "CASHIER", branchId: ilo.id, lines });
+
+    await expect(sale([{ productVariantId: k9.id, quantity: 2 }])).rejects.toThrow(NoPriceForUnitError);
+    await setVariantPrice(prisma, { actorRole: "OWNER", actorUserId: owner.id, productVariantId: k9.id, unitId: units.RIM!, priceList: "RETAIL", price: 120 });
+    const drafted = await sale([{ productVariantId: k9.id, quantity: 2 }]);
+    expect(Number(drafted.lines[0]!.unitPrice)).toBe(120);
+  });
+
+  it("[unit] adding a unit with a retail price saves size, wholesale and retail together — or none of them", async () => {
+    const { k9, units, owner } = await importSample();
+    const actor = { actorRole: "OWNER" as const, actorUserId: owner.id };
+    await addSellingUnit(prisma, { ...actor, productVariantId: k9.id, unitId: units.PACK!, baseQtyPerUnit: 0.1, price: 12, retailPrice: 15 });
+    const pack = (await getSellingUnits(prisma, [k9.id])).get(k9.id)!.find((u) => u.unitCode === "PACK")!;
+    expect([pack.pricesByList.WHOLESALE?.amount, pack.pricesByList.RETAIL?.amount]).toEqual(["12.00", "15.00"]);
+
+    const box = await prisma.unitOfMeasure.findUniqueOrThrow({ where: { code: "BOX" } });
+    await expect(addSellingUnit(prisma, { ...actor, productVariantId: k9.id, unitId: box.id, baseQtyPerUnit: 5, price: 50, retailPrice: 0 })).rejects.toThrow();
+    expect(await prisma.conversionRateVersion.count({ where: { productVariantId: k9.id, fromUnitId: box.id } })).toBe(0);
+    expect(await prisma.variantPrice.count({ where: { productVariantId: k9.id, unitId: box.id } })).toBe(0);
   });
 
   it("[price] a branch price overrides the all-branch price only for that branch", async () => {

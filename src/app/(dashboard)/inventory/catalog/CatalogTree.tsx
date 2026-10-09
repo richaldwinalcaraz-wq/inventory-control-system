@@ -10,6 +10,7 @@ import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import type { CatalogChildRow, CatalogParentRow, CatalogUnitSummary, CatalogViewMode } from "../catalogView";
 import { ParentAsinModal } from "./ParentAsinModal";
 import { ChildAsinModal, type ChildParentContext } from "./ChildAsinModal";
+import { PricesModal } from "./PricesModal";
 import { dangerButton, primaryButton, secondaryButton, sendJson } from "./api";
 import { peso } from "@/lib/money";
 
@@ -28,20 +29,22 @@ type Dialog =
   | { kind: "editParent"; parent: CatalogParentRow }
   | { kind: "addChild"; parent: CatalogParentRow }
   | { kind: "editChild"; parent: CatalogParentRow; child: CatalogChildRow }
+  | { kind: "prices"; parent: CatalogParentRow; child: CatalogChildRow }
   | { kind: "archiveParent"; parent: CatalogParentRow }
   | { kind: "archiveChild"; parent: CatalogParentRow; child: CatalogChildRow };
 
 const asParentContext = (p: CatalogParentRow): ChildParentContext => ({ id: p.id, asin: p.asin, name: p.name, baseUnitId: p.baseUnitId, baseUnitCode: p.baseUnitCode });
 
-/** "Sack ₱4,000.00 · 40 RIM" per priced unit; a pack size still awaiting its checks is marked. */
+/** "Sack ₱4,000.00 · 40 RIM" per priced unit, with its retail price under it; a pack size still awaiting its checks is marked. */
 function UnitPrices({ units, baseUnitCode }: { units: CatalogUnitSummary[]; baseUnitCode: string }) {
-  const priced = units.filter((u) => u.price !== null);
+  const priced = units.filter((u) => u.price !== null || u.retailPrice !== null);
   if (priced.length === 0) return <span className="text-slate-400">No prices yet</span>;
   return (
     <ul className="flex flex-col gap-0.5">
       {priced.map((u) => (
         <li key={u.code} className="whitespace-nowrap">
-          <span className="text-slate-600">{u.name}</span> <span className="font-medium tabular-nums text-slate-900">{peso(u.price!)}</span>
+          <span className="text-slate-600">{u.name}</span>{" "}
+          {u.price !== null ? <span className="font-medium tabular-nums text-slate-900">{peso(u.price)}</span> : <span className="text-slate-400">no wholesale</span>}
           {u.isBaseUnit ? null : u.baseQtyPerUnit !== null ? (
             <span className="text-xs text-slate-500">
               {" "}
@@ -52,6 +55,7 @@ function UnitPrices({ units, baseUnitCode }: { units: CatalogUnitSummary[]; base
               {u.pendingBaseQty !== null ? `${fmt(u.pendingBaseQty)} ${baseUnitCode}?` : "size?"}
             </span>
           )}
+          {u.retailPrice !== null ? <span className="block text-xs tabular-nums text-slate-500">retail {peso(u.retailPrice)}</span> : null}
         </li>
       ))}
     </ul>
@@ -129,6 +133,9 @@ export function CatalogTree({
       </Link>
       {canManage && child.status !== "ARCHIVED" ? (
         <>
+          <button type="button" onClick={() => setDialog({ kind: "prices", parent, child })} className="font-medium text-brand-700 hover:underline">
+            Prices
+          </button>
           <button type="button" onClick={() => setDialog({ kind: "editChild", parent, child })} className="font-medium text-slate-700 hover:underline">
             Edit
           </button>
@@ -173,7 +180,7 @@ export function CatalogTree({
               <tr>
                 <th className="px-4 py-2">Variant</th>
                 <th className="px-4 py-2">SKU</th>
-                <th className="px-4 py-2">Wholesale prices</th>
+                <th className="px-4 py-2">Prices</th>
                 <th className="px-4 py-2">Product</th>
                 <th className="px-4 py-2 text-right">On hand</th>
                 <th className="px-4 py-2">Status</th>
@@ -262,7 +269,7 @@ export function CatalogTree({
                               <tr>
                                 <th className="px-3 py-2">Variant</th>
                                 <th className="px-3 py-2">SKU</th>
-                                <th className="px-3 py-2">Wholesale prices</th>
+                                <th className="px-3 py-2">Prices</th>
                                 {branches.map((b) => (
                                   <th key={b.id} className="px-3 py-2 text-right">
                                     {b.code}
@@ -325,6 +332,18 @@ export function CatalogTree({
           moveTargets={moveTargets.filter((p) => p.baseUnitId === dialog.parent.baseUnitId)}
           onClose={() => setDialog(null)}
           onSaved={(m) => done(m, dialog.parent.id)}
+        />
+      ) : null}
+
+      {dialog?.kind === "prices" ? (
+        <PricesModal
+          variantId={dialog.child.id}
+          variantName={dialog.child.displayName}
+          baseUnitCode={dialog.parent.baseUnitCode}
+          units={dialog.child.units ?? []}
+          onClose={() => setDialog(null)}
+          onSaved={(m) => done(m, dialog.parent.id)}
+          onPartialSave={() => router.refresh()}
         />
       ) : null}
 

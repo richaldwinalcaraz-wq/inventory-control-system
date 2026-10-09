@@ -13,7 +13,7 @@ import { PrismaClient } from "@prisma/client";
 import { postLedgerEntry } from "../../src/server/domain/ledger/postLedgerEntry";
 import { reviewReconciliationLine, BinCardNotYetCapturedError, LineAlreadyReviewedError } from "../../src/server/application/reconciliation/reviewLine";
 import { getIloBranch, getSeedVariant, getUserByRole, createEphemeralUser } from "./helpers/receiving";
-import { uniqueBusinessDate, createReconciliationLine } from "./helpers/reconciliation";
+import { createReconciliationLine } from "./helpers/reconciliation";
 
 const prisma = new PrismaClient();
 
@@ -79,7 +79,7 @@ describe("G-26: reconciliation reviewer eligibility (per-product-per-day)", () =
     const variant = await getSeedVariant(prisma);
     const reviewer = await createEphemeralUser(prisma, { branchId: branch.id, role: "WAREHOUSE_CHECKER", label: "g26-eligible-reviewer" });
 
-    const { line } = await createReconciliationLine(prisma, { branchId: branch.id, variantId: variant.id, systemExpectedClosingQty: 100, businessDate: uniqueBusinessDate() });
+    const { line } = await createReconciliationLine(prisma, { branchId: branch.id, variantId: variant.id, systemExpectedClosingQty: 100 });
     await prisma.dailyReconciliationLine.update({ where: { id: line.id }, data: { binCardQty: 100, variance: 0, matched: true } });
 
     const reviewed = await reviewReconciliationLine(prisma, { actorUserId: reviewer.id, actorRole: "WAREHOUSE_CHECKER", lineId: line.id });

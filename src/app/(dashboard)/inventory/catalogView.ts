@@ -16,9 +16,13 @@ export interface CatalogFilters {
 
 /** One selling unit as the list shows it: "Sack ₱4,000.00 (40 RIM)". */
 export interface CatalogUnitSummary {
+  unitId: string;
   code: string;
   name: string;
+  /** Current all-branch WHOLESALE price. */
   price: string | null;
+  /** Current all-branch RETAIL price. */
+  retailPrice: string | null;
   /** Base units in one of this unit; null while the pack size awaits its two checks. */
   baseQtyPerUnit: number | null;
   pendingBaseQty: number | null;
