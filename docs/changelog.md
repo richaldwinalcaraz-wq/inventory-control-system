@@ -20,6 +20,17 @@ User-facing changes, newest first. Design detail lives in `docs/architecture.md`
 - **Three roles:** Owner, Encoder, Secretary. Other accounts are deactivated.
 
 ### Changed
+- **Changing a unit's size clears its prices.** When a new size (e.g. 50 rims
+  in a sack instead of 40) is confirmed, that unit's old wholesale and retail
+  prices are cleared, so it is never sold at a price meant for the old size.
+  The item page asks the Owner to set new prices.
+- **Inactive needs zero stock.** An item or product can only be set Inactive
+  when nothing is on hand and no delivery or adjustment for it is in
+  progress — the same rule as archiving.
+- **The Encoder who checked a delivery can't also verify it.** Another Encoder
+  or the Owner verifies.
+- Maintenance scripts refuse to run against the live database unless given
+  `--target=production`.
 - Inventory is organised as Product → Variant folders. ASIN is optional.
 - Retail sales now charge the item's Retail price, and wholesale orders its
   Wholesale price. An item with no price on that list can't be sold (it used to

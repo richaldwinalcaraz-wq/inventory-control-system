@@ -18,6 +18,7 @@ import { createDamageReport } from "../src/server/application/disposal/report";
 import { createDisposalCertificate } from "../src/server/application/disposal/createCertificate";
 import { recordDestructionEvidence, postDestroyCertificate } from "../src/server/application/disposal/destroy";
 import { setReorderPoint } from "../src/server/application/inventory/reorderPoints";
+import { assertDbTarget } from "./lib/db-target";
 
 const SUPPLIER_ID = "seed-supplier-01";
 const PIN = "1234";
@@ -31,6 +32,7 @@ async function sessionAndPin(userId: string) {
 }
 
 async function main() {
+  assertDbTarget("db:seed-demo-data");
   const branch = await prisma.branch.findUniqueOrThrow({ where: { code: "ILO" } });
   const receiver = await prisma.user.findUniqueOrThrow({ where: { username: "warehouse_receiver" } });
   const checker = await prisma.user.findUniqueOrThrow({ where: { username: "warehouse_checker" } });

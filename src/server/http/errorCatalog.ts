@@ -30,7 +30,7 @@ import {
   CountsDoNotDisagreeError,
 } from "../application/receiving/counting";
 import { SupervisorRequiredForRejectionError } from "../application/receiving/inspection";
-import { BothCountSlipsRequiredError, VerifierMustNotBeReceiverError } from "../application/receiving/verification";
+import { BothCountSlipsRequiredError, VerifierMustNotBeCheckerError, VerifierMustNotBeReceiverError } from "../application/receiving/verification";
 import { SupplierCallbackRequiredError, WrongApproverRoleError } from "../application/receiving/approval";
 import { NotReadyForEncodingError, MissingFinalQuantitiesError, LivePhotoRequiredError } from "../application/receiving/encoding";
 import { CannotVoidPostedReportError, MatchingGateExitOrOwnerRequiredError } from "../application/receiving/void";
@@ -212,6 +212,7 @@ const CATALOG: Array<[new (...args: never[]) => Error, number, string]> = [
   [SupervisorRequiredForRejectionError, 403, "SUPERVISOR_REQUIRED"],
   [BothCountSlipsRequiredError, 422, "BOTH_COUNT_SLIPS_REQUIRED"],
   [VerifierMustNotBeReceiverError, 403, "SOD_VIOLATION"],
+  [VerifierMustNotBeCheckerError, 403, "SOD_VIOLATION"],
   [SupplierCallbackRequiredError, 422, "SUPPLIER_CALLBACK_REQUIRED"],
   [WrongApproverRoleError, 403, "WRONG_APPROVER_ROLE"],
   [NotReadyForEncodingError, 409, "NOT_READY_FOR_ENCODING"],

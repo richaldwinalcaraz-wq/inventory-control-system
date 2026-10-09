@@ -98,6 +98,16 @@ export default async function VariantDetailPage({ params }: { params: Promise<{ 
   }
   const totalUnits = [...byBranch.values()].reduce((sum, r) => sum + r.qty, 0);
   const units = sellingUnits.get(child.id) ?? [];
+  // Units whose latest price change was the automatic clear after a size change (see confirmPackSize).
+  const clearedBySizeChange = new Set<string>();
+  const seenUnits = new Set<string>();
+  for (const a of audits) {
+    if (a.action !== "catalog.price.set" && a.action !== "catalog.price.removed") continue;
+    const after = a.afterState as { unit?: string; reason?: string } | null;
+    if (!after?.unit || seenUnits.has(after.unit)) continue;
+    seenUnits.add(after.unit);
+    if (after.reason === "pack_size_changed") clearedBySizeChange.add(after.unit);
+  }
   const panelUnits: PanelUnit[] = units.map((u) => ({
     unitId: u.unitId,
     unitCode: u.unitCode,
@@ -114,6 +124,7 @@ export default async function VariantDetailPage({ params }: { params: Promise<{ 
           canCheck: u.pendingPackSize.proposedBy !== session.user.id && u.pendingPackSize.verifiedByUser1 !== session.user.id,
         }
       : null,
+    needsRepricing: clearedBySizeChange.has(u.unitCode) && !u.pricesByList.WHOLESALE && !u.pricesByList.RETAIL,
   }));
   const addableUnits = allUnits.filter((u) => !units.some((x) => x.unitId === u.id));
   const openQuestions = importRows.flatMap((r) => (Array.isArray(r.issues) ? (r.issues as string[]) : []));

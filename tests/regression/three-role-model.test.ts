@@ -1,13 +1,14 @@
 // Three-role model (src/lib/roleModel.ts, client decision 2026-10-05):
 // Secretary receives, Encoder checks/verifies/posts, Owner does everything.
-// The "different person" rules still separate Secretary and Encoder; only
-// the Owner is exempt, and every Owner action is still recorded by name.
+// The "different person" rules still separate Secretary and Encoder, and the
+// Encoder who did the checker count can't verify the same delivery; only the
+// Owner is exempt, and every Owner action is still recorded by name.
 import { describe, it, expect, afterAll } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import { draftReceivingReport } from "../../src/server/application/receiving/draft";
 import { submitReceiverCount, submitCheckerCount } from "../../src/server/application/receiving/counting";
 import { submitInspection } from "../../src/server/application/receiving/inspection";
-import { verifyReceivingReport } from "../../src/server/application/receiving/verification";
+import { verifyReceivingReport, VerifierMustNotBeCheckerError } from "../../src/server/application/receiving/verification";
 import { approveReceivingReport } from "../../src/server/application/receiving/approval";
 import { encodeReceivingReport } from "../../src/server/application/receiving/encoding";
 import { requestAdjustment } from "../../src/server/application/adjustment/request";
@@ -25,7 +26,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-/** Secretary drafts + first count + inspects, Encoder second count + verifies, Owner approves, Encoder posts. */
+/** Secretary drafts + first count + inspects, Encoder second count, Owner verifies (the checker may not) + approves, Encoder posts. */
 async function receiveAsThreeRoles(qty: number) {
   const branch = await getIloBranch(prisma);
   const variant = await getSeedVariant(prisma);
@@ -44,7 +45,8 @@ async function receiveAsThreeRoles(qty: number) {
   await submitReceiverCount(prisma, { rrId: rr.id, actorUserId: secretary!.id, actorRole: "SECRETARY", lines });
   await submitCheckerCount(prisma, { rrId: rr.id, actorUserId: encoder!.id, actorRole: "ENCODER", lines });
   await submitInspection(prisma, { rrId: rr.id, actorUserId: secretary!.id, actorRole: "SECRETARY", outcome: "PASS" });
-  await verifyReceivingReport(prisma, { rrId: rr.id, actorUserId: encoder!.id, actorRole: "ENCODER" });
+  await expect(verifyReceivingReport(prisma, { rrId: rr.id, actorUserId: encoder!.id, actorRole: "ENCODER" })).rejects.toThrow(VerifierMustNotBeCheckerError);
+  await verifyReceivingReport(prisma, { rrId: rr.id, actorUserId: owner!.id, actorRole: "OWNER" });
 
   const ownerAuth = await createSessionAndPin(prisma, owner!.id);
   await approveReceivingReport(prisma, { rrId: rr.id, actorUserId: owner!.id, actorRole: "OWNER", session: ownerAuth.session, pinTokenId: ownerAuth.pinToken.id });
@@ -82,7 +84,7 @@ describe("Three-role model", () => {
     expect(has("OWNER", "retail.blocked")).toBeUndefined();
   });
 
-  it("[flow] a delivery goes Secretary -> Encoder -> Owner -> Encoder all the way to POSTED", async () => {
+  it("[flow] a delivery goes Secretary -> Encoder -> Owner -> Encoder all the way to POSTED; the checker can't verify it", async () => {
     const { rr } = await receiveAsThreeRoles(10);
     const posted = await prisma.receivingReport.findUniqueOrThrow({ where: { id: rr.id } });
     expect(posted.status).toBe("POSTED");

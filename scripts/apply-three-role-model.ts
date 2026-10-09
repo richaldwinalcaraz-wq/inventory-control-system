@@ -14,11 +14,13 @@ import type { RoleName } from "@prisma/client";
 import { prisma } from "../src/lib/prisma";
 import { ACTIVE_ROLES } from "../src/lib/roleModel";
 import { syncActiveRoleGrants } from "../src/server/domain/rbac/activeRoleGrants";
+import { assertDbTarget } from "./lib/db-target";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const ACTIVE = new Set<string>(ACTIVE_ROLES);
 
 async function main() {
+  assertDbTarget("db:apply-three-role-model");
   const owner = await prisma.user.findFirstOrThrow({ where: { role: "OWNER", status: "ACTIVE" }, orderBy: { createdAt: "asc" } });
   const toDeactivate = await prisma.user.findMany({
     where: { status: "ACTIVE", role: { notIn: [...ACTIVE] as RoleName[] } },

@@ -18,6 +18,8 @@ interface RR {
   id: string;
   status: string;
   receivedBy: string;
+  /** Who did the blind checker count, if anyone yet. */
+  checkedBy: string | null;
   poReference: string | null;
   supplierCallbackConfirmedAt: string | null;
   lines: RRLine[];
@@ -210,10 +212,13 @@ export function ReceivingActionPanel({
 
   if (rr.status === "PENDING_VERIFICATION" && (actsAs(role, "WAREHOUSE_SUPERVISOR") || role === "ENCODER")) {
     const isReceiver = rr.receivedBy === currentUser.id && role !== "OWNER";
+    const isChecker = rr.checkedBy === currentUser.id && role !== "OWNER";
     cards.push(
       <ActionCard key="verify" title="Step 8 — Verify">
         {isReceiver ? (
           <p className="text-sm text-red-600">You received this delivery and cannot verify it yourself.</p>
+        ) : isChecker ? (
+          <p className="text-sm text-red-600">You did the checker count on this delivery, so another Encoder or the Owner must verify it.</p>
         ) : (
           <button
             disabled={pending}

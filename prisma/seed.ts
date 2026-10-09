@@ -8,6 +8,7 @@ import { PrismaClient, RoleName, PermissionEffect, WarehouseZone } from "@prisma
 import bcrypt from "bcryptjs";
 import { postLedgerEntry } from "../src/server/domain/ledger/postLedgerEntry";
 import { syncActiveRoleGrants } from "../src/server/domain/rbac/activeRoleGrants";
+import { assertDbTarget } from "../scripts/lib/db-target";
 
 const prisma = new PrismaClient();
 
@@ -15,6 +16,7 @@ const DEV_PASSWORD = "Password123!";
 const DEV_PIN = "1234";
 
 async function main() {
+  assertDbTarget("db:seed");
   const branch = await prisma.branch.upsert({
     where: { code: "ILO" },
     update: {},

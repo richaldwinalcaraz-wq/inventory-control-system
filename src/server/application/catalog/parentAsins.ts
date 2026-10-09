@@ -11,6 +11,7 @@ import {
   writeCatalogAudit,
   type EditableStatus,
 } from "./shared";
+import { assertVariantsCanBeHidden } from "./childAsins";
 
 export class ParentHasChildrenError extends Error {}
 
@@ -86,7 +87,7 @@ export interface UpdateParentAsinParams extends Actor, Partial<ParentAsinFields>
   asin?: string | null;
 }
 
-/** Edits a Parent ASIN's details. Archived parents must be restored first. Logs only the fields that actually changed. */
+/** Edits a Parent ASIN's details. Archived parents must be restored first. Setting it Inactive hides all its variants, so it has the same stock checks as archiving them. Logs only the fields that actually changed. */
 export async function updateParentAsin(prisma: PrismaClient, params: UpdateParentAsinParams) {
   await assertPermission(prisma, { role: params.actorRole, action: "inventory.product.update" });
 
@@ -105,6 +106,10 @@ export async function updateParentAsin(prisma: PrismaClient, params: UpdateParen
       notes: params.notes !== undefined ? cleanText(params.notes) : current.notes,
       status: params.status ?? current.status,
     };
+    if (next.status === "INACTIVE" && current.status !== "INACTIVE") {
+      const variants = await tx.productVariant.findMany({ where: { productId: current.id, status: { not: "ARCHIVED" } }, select: { id: true } });
+      await assertVariantsCanBeHidden(tx, variants.map((v) => v.id), current.name, "setting it Inactive");
+    }
     if (next.asin && next.asin !== current.asin) await assertAsinAvailable(tx, next.asin, { productId: current.id });
     if (next.sku && next.sku !== current.sku) await assertSkuAvailable(tx, next.sku, { productId: current.id });
 

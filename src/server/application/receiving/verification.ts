@@ -6,6 +6,7 @@ import { isOwner } from "../../../lib/roleModel";
 /** BR-025: assembly is hard-blocked unless both a Receiver and a Checker/tie-break count slip exist. */
 export class BothCountSlipsRequiredError extends Error {}
 export class VerifierMustNotBeReceiverError extends Error {}
+export class VerifierMustNotBeCheckerError extends Error {}
 
 async function hasBothCountSlips(prisma: PrismaClient, rrId: string): Promise<boolean> {
   const slips = await prisma.countSlip.findMany({ where: { referenceType: "ReceivingReport", referenceId: rrId } });
@@ -39,7 +40,12 @@ export async function prepareReceivingReport(
   return { ready: true };
 }
 
-/** Step 8 — Supervisor verification. The verifier must not be the same person who received the goods. */
+/**
+ * Step 8 — Supervisor verification. The verifier must be neither the person
+ * who received the goods nor the one who did the blind checker count —
+ * otherwise one Encoder could count and sign off the same delivery alone.
+ * The Owner is exempt (and still recorded by name).
+ */
 export async function verifyReceivingReport(
   prisma: PrismaClient,
   params: { actorUserId: string; actorRole: RoleName; rrId: string },
@@ -56,6 +62,12 @@ export async function verifyReceivingReport(
   }
   if (!(await hasBothCountSlips(prisma, params.rrId))) {
     throw new BothCountSlipsRequiredError("Both a receiver count and a resolved checker/tie-break count are required (BR-025).");
+  }
+  if (!isOwner(params.actorRole)) {
+    const checkerSlip = await prisma.countSlip.findFirst({ where: { referenceType: "ReceivingReport", referenceId: params.rrId, role: "CHECKER", countedBy: params.actorUserId } });
+    if (checkerSlip) {
+      throw new VerifierMustNotBeCheckerError("You did the checker count on this delivery, so someone else (another Encoder or the Owner) must verify it.");
+    }
   }
 
   return prisma.receivingReport.update({

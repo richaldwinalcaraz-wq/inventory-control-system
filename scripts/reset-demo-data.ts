@@ -3,8 +3,10 @@
 // (branch, categories, supplier, units, locations, users, permissions,
 // approval thresholds, booklet registry) is left untouched.
 import { prisma } from "../src/lib/prisma";
+import { assertDbTarget } from "./lib/db-target";
 
 async function main() {
+  assertDbTarget("db:reset-demo");
   await prisma.$transaction([
     prisma.transactionEvidence.deleteMany({}),
     prisma.countSlipLine.deleteMany({}),

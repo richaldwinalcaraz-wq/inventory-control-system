@@ -15,6 +15,7 @@ import { prepareReceivingReport, verifyReceivingReport } from "../src/server/app
 import { approveReceivingReport } from "../src/server/application/receiving/approval";
 import { encodeReceivingReport } from "../src/server/application/receiving/encoding";
 import { setReorderPoint } from "../src/server/application/inventory/reorderPoints";
+import { assertDbTarget } from "./lib/db-target";
 
 const SUPPLIER_ID = "seed-supplier-01";
 const PIN = "1234";
@@ -33,6 +34,7 @@ function niceRoundAbove(n: number): number {
 }
 
 async function main() {
+  assertDbTarget("db:seed-demo-stock-topup");
   const branch = await prisma.branch.findUniqueOrThrow({ where: { code: "ILO" } });
   const receiver = await prisma.user.findUniqueOrThrow({ where: { username: "warehouse_receiver" } });
   const checker = await prisma.user.findUniqueOrThrow({ where: { username: "warehouse_checker" } });

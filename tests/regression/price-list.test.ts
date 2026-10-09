@@ -7,7 +7,7 @@ import { PrismaClient } from "@prisma/client";
 import { normalizeName, parsePriceListRows, planPriceListImport, type Cell, type ParsedItem, type SheetRow } from "../../src/server/domain/catalog/priceListImport";
 import { applyPriceListImport, PriceListImportRejectedError } from "../../src/server/application/catalog/importPriceList";
 import { getSellingUnits, quoteLine, NoPriceForUnitError, PackSizeNotConfirmedError } from "../../src/server/domain/catalog/pricing";
-import { addSellingUnit, confirmPackSize, rejectPackSize, removeVariantPrice, setVariantPrice, PackSizeRequiredError } from "../../src/server/application/catalog/sellingUnits";
+import { addSellingUnit, confirmPackSize, proposePackSize, rejectPackSize, removeVariantPrice, setVariantPrice, PackSizeRequiredError } from "../../src/server/application/catalog/sellingUnits";
 import { getProductMaster } from "../../src/server/application/catalog/productMaster";
 import { draftRetailSale } from "../../src/server/application/retail/draft";
 import { createParentAsin } from "../../src/server/application/catalog/parentAsins";
@@ -172,6 +172,35 @@ describe("Price list — import, prices and pack sizes", () => {
     expect((await prisma.conversionRateVersion.findUniqueOrThrow({ where: { id: pack.id } })).status).toBe("REJECTED");
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: k9.id, action: "catalog.pack_size.rejected" } });
     expect(audit.afterState).toMatchObject({ countedBaseQty: 38, note: "Short 2 rims" });
+  });
+
+  it("[check] confirming a NEW sack size clears the sack's old prices on every list and branch; the first size and the rim keep theirs", async () => {
+    const { k9, units, owner } = await importSample();
+    const [secretary, encoder, ilo] = await Promise.all([getUserByRole(prisma, "secretary"), getUserByRole(prisma, "encoder"), getIloBranch(prisma)]);
+    const actor = { actorRole: "OWNER" as const, actorUserId: owner.id };
+    const confirmTwice = async (id: string) => {
+      await confirmPackSize(prisma, { actorRole: "SECRETARY", actorUserId: secretary.id, conversionRateVersionId: id });
+      return confirmPackSize(prisma, { actorRole: "ENCODER", actorUserId: encoder.id, conversionRateVersionId: id });
+    };
+    const first = await prisma.conversionRateVersion.findFirstOrThrow({ where: { productVariantId: k9.id, status: "PENDING_VERIFICATION" } });
+    expect((await confirmTwice(first.id)).pricesCleared).toBe(0);
+    expect((await quoteLine(prisma, { productVariantId: k9.id, unitId: units.SACK!, quantity: 1 })).unitPrice).toBe("4000.00");
+
+    await setVariantPrice(prisma, { ...actor, productVariantId: k9.id, unitId: units.SACK!, priceList: "RETAIL", price: 4500 });
+    await setVariantPrice(prisma, { ...actor, productVariantId: k9.id, unitId: units.SACK!, price: 3900, branchId: ilo.id });
+    const bigger = await proposePackSize(prisma, { ...actor, productVariantId: k9.id, unitId: units.SACK!, baseQtyPerUnit: 50 });
+    // While the new size waits for checks, the old size and its price still sell.
+    expect((await quoteLine(prisma, { productVariantId: k9.id, unitId: units.SACK!, quantity: 1 })).baseQuantity).toBe("40");
+
+    expect((await confirmTwice(bigger.id)).pricesCleared).toBe(3);
+    await expect(quoteLine(prisma, { productVariantId: k9.id, unitId: units.SACK!, quantity: 1 })).rejects.toThrow(NoPriceForUnitError);
+    await expect(quoteLine(prisma, { productVariantId: k9.id, unitId: units.SACK!, quantity: 1, priceList: "RETAIL", branchId: ilo.id })).rejects.toThrow(NoPriceForUnitError);
+    expect((await quoteLine(prisma, { productVariantId: k9.id, unitId: units.RIM!, quantity: 1 })).unitPrice).toBe("100.00");
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: k9.id, action: "catalog.price.removed" } });
+    expect(audit.afterState).toMatchObject({ unit: "SACK", reason: "pack_size_changed", oldRate: 40, newRate: 50 });
+
+    await setVariantPrice(prisma, { ...actor, productVariantId: k9.id, unitId: units.SACK!, price: 5000 });
+    expect(await quoteLine(prisma, { productVariantId: k9.id, unitId: units.SACK!, quantity: 1 })).toMatchObject({ unitPrice: "5000.00", baseQuantity: "50" });
   });
 
   it("[price] a price change keeps the old price as history; new quotes use the new price; base price syncs the legacy field", async () => {

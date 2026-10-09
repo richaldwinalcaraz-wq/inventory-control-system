@@ -22,6 +22,28 @@ interface Actor {
   actorUserId: string;
 }
 
+/**
+ * Refuses to hide variants from every picker (archive or set Inactive)
+ * while they still hold stock or a receiving report/adjustment for them is
+ * in flight — stock must never sit on an item nobody can select to count,
+ * adjust or sell. `what` names the item(s) and `verb` the action in the message.
+ */
+export async function assertVariantsCanBeHidden(tx: Prisma.TransactionClient, productVariantIds: string[], what: string, verb: string) {
+  if (productVariantIds.length === 0) return;
+  const [stock, openReceiving, openAdjustments] = await Promise.all([
+    tx.stockBalance.aggregate({ where: { productVariantId: { in: productVariantIds } }, _sum: { quantityOnHand: true } }),
+    tx.receivingReportLine.count({ where: { productVariantId: { in: productVariantIds }, receivingReport: { status: { notIn: ["POSTED", "VOID"] } } } }),
+    tx.adjustmentRequest.count({ where: { productVariantId: { in: productVariantIds }, status: { notIn: ["POSTED", "REJECTED", "VOID"] } } }),
+  ]);
+  const onHand = Number(stock._sum.quantityOnHand ?? 0);
+  if (onHand !== 0) {
+    throw new ProductStillInUseError(`${what} still has ${onHand} on hand across all branches — bring it to zero with a Stock Adjustment before ${verb}.`);
+  }
+  if (openReceiving > 0 || openAdjustments > 0) {
+    throw new ProductStillInUseError(`${what} has ${openReceiving} receiving report(s) and ${openAdjustments} adjustment(s) still in progress — finish or void them before ${verb}.`);
+  }
+}
+
 async function requireLiveParent(tx: Prisma.TransactionClient, productId: string) {
   const parent = await tx.product.findUnique({ where: { id: productId } });
   if (!parent) throw new CatalogRecordNotFoundError(`Parent ${productId} was not found.`);
@@ -102,7 +124,7 @@ export interface UpdateChildAsinParams extends Actor {
   parentProductId?: string;
 }
 
-/** Edits a variant's details, including moving it to another product. Prices change through sellingUnits.ts, not here. Archived variants must be restored first. */
+/** Edits a variant's details, including moving it to another product. Prices change through sellingUnits.ts, not here. Archived variants must be restored first; setting Inactive has the same stock checks as archiving. */
 export async function updateChildAsin(prisma: PrismaClient, params: UpdateChildAsinParams) {
   await assertPermission(prisma, { role: params.actorRole, action: "inventory.product.update" });
 
@@ -119,6 +141,7 @@ export async function updateChildAsin(prisma: PrismaClient, params: UpdateChildA
       notes: params.notes !== undefined ? cleanText(params.notes) : current.notes,
       status: params.status ?? current.status,
     };
+    if (next.status === "INACTIVE" && current.status !== "INACTIVE") await assertVariantsCanBeHidden(tx, [current.id], current.name ?? current.sku, "setting it Inactive");
     if (next.asin && next.asin !== current.asin) await assertAsinAvailable(tx, next.asin, { productVariantId: current.id });
     if (next.sku !== current.sku) await assertSkuAvailable(tx, next.sku, { productVariantId: current.id });
 
@@ -190,19 +213,7 @@ export async function archiveChildAsin(prisma: PrismaClient, params: Actor & { p
     if (!child) throw new CatalogRecordNotFoundError(`Child ${params.productVariantId} was not found.`);
     if (child.status === "ARCHIVED") throw new CatalogRecordArchivedError(`${child.name ?? child.sku} is already archived.`);
 
-    const [stock, openReceiving, openAdjustments] = await Promise.all([
-      tx.stockBalance.aggregate({ where: { productVariantId: child.id }, _sum: { quantityOnHand: true } }),
-      tx.receivingReportLine.count({ where: { productVariantId: child.id, receivingReport: { status: { notIn: ["POSTED", "VOID"] } } } }),
-      tx.adjustmentRequest.count({ where: { productVariantId: child.id, status: { notIn: ["POSTED", "REJECTED", "VOID"] } } }),
-    ]);
-    const onHand = Number(stock._sum.quantityOnHand ?? 0);
-    const label = child.name ?? child.sku;
-    if (onHand !== 0) {
-      throw new ProductStillInUseError(`${label} still has ${onHand} on hand across all branches — bring it to zero with a Stock Adjustment before archiving.`);
-    }
-    if (openReceiving > 0 || openAdjustments > 0) {
-      throw new ProductStillInUseError(`${label} has ${openReceiving} receiving report(s) and ${openAdjustments} adjustment(s) still in progress — finish or void them first.`);
-    }
+    await assertVariantsCanBeHidden(tx, [child.id], child.name ?? child.sku, "archiving");
 
     const archived = await tx.productVariant.update({ where: { id: child.id }, data: { status: "ARCHIVED" } });
     await writeCatalogAudit(tx, {

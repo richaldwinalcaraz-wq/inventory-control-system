@@ -17,6 +17,7 @@ import { prisma } from "../src/lib/prisma";
 import { parsePriceListRows, planPriceListImport, SHEET_COLUMNS, type Cell, type SheetRow } from "../src/server/domain/catalog/priceListImport";
 import { applyPriceListImport } from "../src/server/application/catalog/importPriceList";
 import { assignProduct } from "./price-list-grouping";
+import { assertDbTarget } from "./lib/db-target";
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes("--dry-run");
@@ -51,6 +52,7 @@ async function readSheet(file: string): Promise<SheetRow[]> {
 }
 
 async function main() {
+  assertDbTarget("db:import-price-list");
   if (!FILE) throw new Error('Usage: npm run db:import-price-list -- "<path to xlsx>" [--dry-run] [--owner <username>]');
   const sha256 = createHash("sha256").update(readFileSync(FILE)).digest("hex");
   const items = parsePriceListRows(await readSheet(FILE));

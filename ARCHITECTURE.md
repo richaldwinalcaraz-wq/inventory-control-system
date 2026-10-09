@@ -728,3 +728,16 @@ session touches these docs again.
 - **DB grants:** the app uses Prisma as the table owner only (no supabase-js,
   no RLS), so the authenticated/service_role GRANT rule doesn't apply yet.
   Revisit if the new DB (Drizzle switch) adds a Supabase/PostgREST client.
+
+## 2026-10-09 — Audit items resolved
+
+Fixed on `feat/product-pricing` (see `docs/architecture.md` section 22):
+pack-size change now retires the unit's prices; INACTIVE runs the archive
+checks (variant and product); the checker can't verify the same delivery;
+the seed and all `db:*` writing scripts refuse a non-local DB without
+`--target=production`. Also closed earlier today: legacy `sellingPrice` drift
+(retail/wholesale drafts now price through `getBaseUnitPrices` and refuse a
+missing price), `.gitignore` covers `docs/catalog-import/`, and the G-26 flake
+(`unusedBusinessDate`). Still open: Vercel token rotation, Sentry, and splitting
+`6fd14b5` into per-feature commits before merging to main (needs a force-push
+of the shared branch — ask first).

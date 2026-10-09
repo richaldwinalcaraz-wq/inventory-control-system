@@ -134,7 +134,7 @@ Who: **Warehouse Receiver** or **Warehouse Supervisor**.
 
 ### 4.4 Prepare & verify (Steps 7–8)
 
-Who: **Warehouse Supervisor**, but **not** the same person who received the delivery (separation of duties — the panel will tell you if you can't verify your own receipt).
+Who: **Warehouse Supervisor** (or Encoder), but **not** the person who received the delivery and **not** the person who did its checker count (separation of duties — the panel tells you if you can't verify it; the Owner can always verify).
 
 Click **Verify receiving report**.
 

@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
+import { assertDbTarget } from "./lib/db-target";
 
 function generatePassword(): string {
   // 18 random bytes, base64url-encoded (~24 chars, URL/shell-safe, no
@@ -15,6 +16,7 @@ function generatePassword(): string {
 }
 
 async function main() {
+  assertDbTarget("db:rotate-passwords");
   const users = await prisma.user.findMany({
     select: { id: true, username: true, role: true },
     orderBy: { username: "asc" },

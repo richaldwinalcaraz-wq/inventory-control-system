@@ -18,6 +18,8 @@ export interface PanelUnit {
   /** Current all-branch RETAIL price. */
   retailPrice: string | null;
   pending: { conversionRateVersionId: string; rate: number; checksDone: number; canCheck: boolean } | null;
+  /** Its prices were cleared because its size changed, and none has been set since. */
+  needsRepricing: boolean;
 }
 
 type Editing = { kind: "price"; unit: PanelUnit } | { kind: "size"; unit: PanelUnit } | { kind: "add" } | null;
@@ -141,6 +143,9 @@ export function SellingUnitsPanel({
                         <span className="text-xs text-amber-900">
                           {u.baseQtyPerUnit !== null ? "Change pending" : "Waiting for checks"}: {fmt(u.pending.rate)} {baseUnit.code} ({u.pending.checksDone} of 2 checks)
                         </span>
+                        {u.baseQtyPerUnit !== null && (u.price || u.retailPrice) ? (
+                          <span className="block text-xs text-amber-900">Its prices will be cleared when this is confirmed.</span>
+                        ) : null}
                         {u.pending.canCheck ? (
                           <div className="mt-1.5">
                             <PackSizeCheck conversionRateVersionId={u.pending.conversionRateVersionId} unitName={u.unitName} baseUnitCode={baseUnit.code} rate={u.pending.rate} checksDone={u.pending.checksDone} />
@@ -149,6 +154,11 @@ export function SellingUnitsPanel({
                       </div>
                     ) : null}
                     {u.baseQtyPerUnit === null && !u.pending ? <span className="text-slate-400">Size not set</span> : null}
+                    {u.needsRepricing ? (
+                      <span role="status" className="rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+                        Size changed, so its old prices were cleared. Set new prices to sell it by the {u.unitName.toLowerCase()} again.
+                      </span>
+                    ) : null}
                   </div>
                 )}
               </td>
@@ -237,6 +247,11 @@ export function SellingUnitsPanel({
             </button>
           </div>
           {editing.kind !== "price" ? <p className="w-full text-xs text-slate-500">A new size only counts after two people other than you open one and confirm the count.</p> : null}
+          {editing.kind === "size" && editing.unit.baseQtyPerUnit !== null && (editing.unit.price || editing.unit.retailPrice) ? (
+            <p role="alert" className="w-full rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              When the new size is confirmed, the {editing.unit.unitName.toLowerCase()}&apos;s current prices are cleared so it is never sold at a price meant for the old size. Set its new prices then.
+            </p>
+          ) : null}
           {editing.kind !== "size" && price !== "" && retail !== "" && Number(retail) < Number(price) ? (
             <p className="w-full rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">Retail is lower than wholesale. Check this isn&apos;t a typo.</p>
           ) : null}

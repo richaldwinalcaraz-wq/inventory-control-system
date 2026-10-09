@@ -814,3 +814,35 @@ per unit from a "Prices" button on each variant row (`PricesModal.tsx`; blank
 the legacy `sellingPrice`, which mirrors wholesale only. `/price-list` has a
 Wholesale / Retail switch (`?list=retail`). Entering retail below wholesale
 shows a warning but is allowed.
+
+## 22. Audit Fixes: Size Changes, Inactive, Verifier, Script Target (2026-10-09)
+
+Four gaps from the 2026-10-08 close-out audit.
+
+- **A size change clears that unit's prices.** Context: a sack price is set
+  for one size (₱4,000 for 40 rims). When a new size (50 rims) was confirmed,
+  the old price stayed live, so 50 rims sold for the 40-rim price. Decision:
+  `confirmPackSize`, on the check that activates a size replacing a
+  *different* confirmed size, retires every current price of that unit (both
+  lists, all branches) in the same transaction, audited as
+  `catalog.price.removed` with `reason: "pack_size_changed"`. The first size
+  ever confirmed clears nothing. Consequences: the unit can't be sold until
+  the Owner prices the new size; the item page warns when the change is
+  proposed, while it is pending, and after it activates. Rejected: keeping
+  the price and only warning (it stays sellable at the wrong price), and
+  checking sack = rims × rim price (sack discounts are normal).
+- **Inactive has the archive checks.** Setting a variant, or its product,
+  Inactive hides it from every picker exactly like archiving, so
+  `assertVariantsCanBeHidden` (`childAsins.ts`) now runs for both: no stock on
+  hand, no receiving report or adjustment in progress.
+- **The checker can't verify the same delivery.** One Encoder could do the
+  blind checker count and the Step 8 verification of one delivery.
+  `verifyReceivingReport` now refuses a verifier who submitted that delivery's
+  CHECKER slip (`VerifierMustNotBeCheckerError`, 403 `SOD_VIOLATION`). The
+  Owner stays exempt. With a single Encoder, the Owner verifies.
+- **Scripts refuse production by default.** `.env` points at production.
+  The seed and every `db:*` script that writes call `assertDbTarget()`
+  (`scripts/lib/db-target.ts`): a non-local `DATABASE_URL` needs
+  `--target=production`, and that flag against a local database is refused.
+  With `prisma db seed`, pass it after `--`. `db:test:setup` keeps its own
+  test-database check.

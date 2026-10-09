@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 import { describe, it, expect, afterAll } from "vitest";
 import { PrismaClient } from "@prisma/client";
-import { createParentAsin, archiveParentAsin, restoreParentAsin, ParentHasChildrenError } from "../../src/server/application/catalog/parentAsins";
+import { createParentAsin, updateParentAsin, archiveParentAsin, restoreParentAsin, ParentHasChildrenError } from "../../src/server/application/catalog/parentAsins";
 import { addChildAsin, updateChildAsin, archiveChildAsin, ProductStillInUseError, IncompatibleParentError } from "../../src/server/application/catalog/childAsins";
 import { ChildAsinExistsError, ParentAsinExistsError, InvalidAsinError, resolveAsin } from "../../src/server/domain/catalog/asin";
 import { PermissionDeniedError } from "../../src/server/domain/rbac/assertPermission";
@@ -184,6 +184,21 @@ describe("Parent ASIN -> Child ASIN catalog", () => {
     const child = await makeChild(parent.id, { Size: "Small" });
     await receiveIntoChild(child.id, 5);
     await expect(archiveChildAsin(prisma, { ...(await ownerActor()), productVariantId: child.id })).rejects.toThrow(ProductStillInUseError);
+  });
+
+  it("Test 8c: setting a Child — or its Parent — Inactive hides it from pickers, so it is blocked while stock remains", async () => {
+    const owner = await ownerActor();
+    const parent = await makeParent();
+    const child = await makeChild(parent.id, { Size: "Small" });
+    await receiveIntoChild(child.id, 5);
+    await expect(updateChildAsin(prisma, { ...owner, productVariantId: child.id, status: "INACTIVE" })).rejects.toThrow(ProductStillInUseError);
+    await expect(updateParentAsin(prisma, { ...owner, productId: parent.id, status: "INACTIVE" })).rejects.toThrow(ProductStillInUseError);
+    expect((await prisma.productVariant.findUniqueOrThrow({ where: { id: child.id } })).status).toBe("ACTIVE");
+
+    const empty = await makeParent();
+    const unused = await makeChild(empty.id, { Size: "Large" });
+    expect((await updateChildAsin(prisma, { ...owner, productVariantId: unused.id, status: "INACTIVE" })).status).toBe("INACTIVE");
+    expect((await updateParentAsin(prisma, { ...owner, productId: empty.id, status: "INACTIVE" })).status).toBe("INACTIVE");
   });
 
   it("Test 9: a transaction against a Child ASIN resolves Child -> Parent -> Product", async () => {

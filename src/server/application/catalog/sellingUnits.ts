@@ -169,8 +169,30 @@ export async function addSellingUnit(
 }
 
 /**
+ * Retires every current price (all lists, all branches) of one unit, e.g.
+ * because its size changed: ₱4,000 for a 40-rim sack must not silently
+ * become the price of a 50-rim sack. Returns how many were retired.
+ */
+async function retireUnitPricesTx(tx: Prisma.TransactionClient, params: { actorUserId: string; productVariantId: string; unitId: string; unitCode: string; reason: Record<string, unknown> }) {
+  const current = await tx.variantPrice.findMany({ where: { productVariantId: params.productVariantId, unitId: params.unitId, supersededAt: null } });
+  if (current.length === 0) return 0;
+  await tx.variantPrice.updateMany({ where: { id: { in: current.map((p) => p.id) } }, data: { supersededAt: new Date() } });
+  await writeCatalogAudit(tx, {
+    actorUserId: params.actorUserId,
+    action: "catalog.price.removed",
+    entityType: "ProductVariant",
+    entityId: params.productVariantId,
+    before: { unit: params.unitCode, prices: current.map((p) => ({ priceList: p.priceList, branchId: p.branchId, price: p.price.toFixed(2) })) },
+    after: { unit: params.unitCode, prices: [], ...params.reason },
+  });
+  return current.length;
+}
+
+/**
  * One witnessed physical check of a pending pack size. The second check by
  * a different person (neither may be the proposer — BR-068) activates it.
+ * When that replaces a different confirmed size, the unit's old prices are
+ * retired in the same transaction — the Owner must price the new size.
  */
 export async function confirmPackSize(prisma: PrismaClient, params: Actor & { conversionRateVersionId: string }) {
   await assertPermission(prisma, { role: params.actorRole, action: "inventory.pack_size.verify" });
@@ -178,6 +200,9 @@ export async function confirmPackSize(prisma: PrismaClient, params: Actor & { co
     const version = await tx.conversionRateVersion.findUnique({ where: { id: params.conversionRateVersionId }, include: { fromUnit: true } });
     if (!version) throw new CatalogRecordNotFoundError(`Pack size ${params.conversionRateVersionId} was not found.`);
     await lockVariant(tx, version.productVariantId);
+    const previous = await tx.conversionRateVersion.findFirst({
+      where: { productVariantId: version.productVariantId, fromUnitId: version.fromUnitId, toUnitId: version.toUnitId, status: "ACTIVE" },
+    });
     const updated = await verifyConversionRate(tx, { conversionRateVersionId: version.id, verifiedBy: params.actorUserId });
     await writeCatalogAudit(tx, {
       actorUserId: params.actorUserId,
@@ -186,7 +211,17 @@ export async function confirmPackSize(prisma: PrismaClient, params: Actor & { co
       entityId: version.productVariantId,
       after: { unit: version.fromUnit.code, rate: Number(version.rate), check: updated.status === "ACTIVE" ? 2 : 1 },
     });
-    return updated;
+    const sizeChanged = updated.status === "ACTIVE" && previous !== null && !previous.rate.equals(version.rate);
+    const pricesCleared = sizeChanged
+      ? await retireUnitPricesTx(tx, {
+          actorUserId: params.actorUserId,
+          productVariantId: version.productVariantId,
+          unitId: version.fromUnitId,
+          unitCode: version.fromUnit.code,
+          reason: { reason: "pack_size_changed", oldRate: Number(previous.rate), newRate: Number(version.rate) },
+        })
+      : 0;
+    return { ...updated, pricesCleared };
   });
 }
 

@@ -137,6 +137,7 @@ export default async function ReceivingDetailPage({ params }: { params: Promise<
           id: rr.id,
           status: rr.status,
           receivedBy: rr.receivedBy,
+          checkedBy: countSlips.find((s) => s.role === "CHECKER")?.countedBy ?? null,
           poReference: rr.poReference,
           supplierCallbackConfirmedAt: rr.supplierCallbackConfirmedAt?.toISOString() ?? null,
           lines: rr.lines.map((l) => ({
